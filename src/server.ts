@@ -20,7 +20,7 @@ dotenv.config();
 
 import app from './app';
 
-const PORT = 4000; // Utilise un port libre (ex: 4000, 3001, 8080...)
+const PORT = process.env.PORT || 4000;
 
 app.listen(PORT, () => {
   console.log(`🚀 Serveur backend Cash Hay en cours sur le port ${PORT}`);

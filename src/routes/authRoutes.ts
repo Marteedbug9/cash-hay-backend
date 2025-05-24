@@ -1,25 +1,17 @@
-import express from 'express';
-import {
-  register,
-  login,
-  getProfile,
-  startRecovery,
-  verifyEmailForRecovery,
-  resetPassword
-} from '../controllers/authController'; // ✔️ Tous viennent d’ici
+import { Router } from 'express';
+import { login, register, getProfile } from '../controllers/authController';
+import verifyToken from '../middlewares/verifyToken';
 
-import { authenticateToken } from '../middlewares/authMiddleware';
 
-const router = express.Router();
+const router = Router();
 
-// 🔐 Authentification
+// Route pour inscription
 router.post('/register', register);
-router.post('/login', login);
-router.get('/profile', authenticateToken, getProfile);
 
-// 🔁 Récupération de mot de passe
-router.post('/recovery/start', startRecovery);
-router.post('/recovery/verify-email', verifyEmailForRecovery);
-router.post('/recovery/reset-password', resetPassword);
+// Route pour connexion
+router.post('/login', login);
+
+// Route protégée : récupérer les infos du profil
+router.get('/profile', verifyToken, getProfile);
 
 export default router;
