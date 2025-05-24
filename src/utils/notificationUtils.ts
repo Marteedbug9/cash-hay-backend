@@ -1,8 +1,11 @@
-// src/utils/notificationUtils.ts
 import nodemailer from 'nodemailer';
+import twilio from 'twilio';
 import dotenv from 'dotenv';
 
 dotenv.config();
+
+// Client Twilio
+const twilioClient = twilio(process.env.TWILIO_SID!, process.env.TWILIO_TOKEN!);
 
 // 📧 Fonction pour envoyer un email
 export const sendEmail = async ({
@@ -20,7 +23,7 @@ export const sendEmail = async ({
 
   try {
     const transporter = nodemailer.createTransport({
-      service: 'gmail', // Peut être remplacé par un service SMTP personnalisé
+      service: 'gmail',
       auth: {
         user: process.env.EMAIL_USER,
         pass: process.env.EMAIL_PASS,
@@ -41,18 +44,20 @@ export const sendEmail = async ({
   }
 };
 
-// 📱 Fonction simulée pour envoyer un SMS (à remplacer par un vrai service SMS)
+// 📱 Fonction pour envoyer un SMS via Twilio
 export const sendSMS = async (phone: string, message: string): Promise<void> => {
+  if (!process.env.TWILIO_PHONE) {
+    throw new Error('Numéro Twilio non configuré.');
+  }
+
   try {
-    console.log(`📱 SMS simulé à ${phone} : ${message}`);
+    const result = await twilioClient.messages.create({
+      body: message,
+      to: phone,
+      from: process.env.TWILIO_PHONE,
+    });
 
-    // Pour Twilio ou autre, décommenter et configurer :
-    // await twilioClient.messages.create({
-    //   body: message,
-    //   to: phone,
-    //   from: process.env.TWILIO_PHONE,
-    // });
-
+    console.log(`📱 SMS envoyé à ${phone} - SID: ${result.sid}`);
   } catch (error) {
     console.error('❌ Erreur lors de l’envoi du SMS :', error);
     throw new Error('Échec de l’envoi du SMS.');

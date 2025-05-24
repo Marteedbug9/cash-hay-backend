@@ -1,25 +1,34 @@
-exports.maskEmail = (email) => {
+import db from '../config/db';
+import { sendEmail, sendSMS } from './notificationUtils';
+
+
+export const maskEmail = (email: string): string => {
   const [user, domain] = email.split('@');
-  return user.slice(0, 1) + '***' + user.slice(-1) + '@' + domain;
+  const maskedUser = user.slice(0, 2) + '***';
+  return `${maskedUser}@${domain}`;
 };
 
-exports.sendSecurityAlertEmail = async (to) => {
-  // Utilise nodemailer par exemple
-  const content = `
-Quelqu’un a essayé de réinitialiser votre mot de passe.
-Si ce n’est pas vous, répondez avec "NON" immédiatement pour bloquer l’accès.
-  `;
-  await sendEmail(to, 'Alerte Sécurité', content);
+export const sendSecurityAlertEmail = async (to: string): Promise<void> => {
+  const content = `Une tentative de récupération de votre compte a été détectée.`;
+  await sendEmail({
+    to,
+    subject: 'Alerte Sécurité',
+    text: content,
+  });
 };
 
-exports.generateOTP = () => Math.floor(100000 + Math.random() * 900000).toString();
-
-exports.sendOTP = async (phone, email, otp) => {
-  await sendEmail(email, 'Votre code de réinitialisation', `Code: ${otp}`);
+export const sendOTP = async (phone: string, email: string, otp: string): Promise<void> => {
+  await sendEmail({
+    to: email,
+    subject: 'Votre code de réinitialisation',
+    text: `Code: ${otp}`,
+  });
   await sendSMS(phone, `Votre code est : ${otp}`);
 };
 
-exports.storeOTP = async (userId, otp) => {
-  // Enregistre l’OTP dans ta DB ou Redis (exemple simple ici)
-  await db.query('INSERT INTO otps (user_id, code, created_at) VALUES (?, ?, NOW())', [userId, otp]);
+export const storeOTP = async (userId: string, otp: string): Promise<void> => {
+  await db.query(
+    'INSERT INTO otps (user_id, code, created_at) VALUES ($1, $2, NOW())',
+    [userId, otp]
+  );
 };

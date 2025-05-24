@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import pool from '../config/db';
 import crypto from 'crypto';
-import bcrypt from 'bcryptjs';
+import bcrypt from 'bcrypt';
 import { sendEmail } from '../utils/notificationUtils';
 
 // ❌ En mémoire pour dev seulement (Redis recommandé en production)
