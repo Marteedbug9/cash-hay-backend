@@ -1,6 +1,6 @@
 import { RequestHandler, Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
-import bcrypt from 'bcryptjs';
+import bcrypt from 'bcrypt';
 import pool from '../config/db';
 import { sendEmail, sendSMS } from '../utils/notificationUtils';
 
