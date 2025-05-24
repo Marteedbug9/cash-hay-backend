@@ -1,6 +1,7 @@
 {
   "name": "cash-hay-backend",
   "version": "1.0.0",
+  "description": "Backend API for Cash Hay",
   "main": "dist/server.js",
   "scripts": {
     "build": "tsc",
@@ -15,12 +16,12 @@
     "jsonwebtoken": "^9.0.2",
     "nodemailer": "^7.0.3",
     "pg": "^8.16.0",
-    "twilio": "^5.6.1",
-    "@types/express": "^4.17.22",
-    "@types/cors": "^2.8.18"
+    "twilio": "^5.6.1"
   },
   "devDependencies": {
     "@types/bcrypt": "^5.0.2",
+    "@types/cors": "^2.8.18",
+    "@types/express": "^4.17.22",
     "@types/jsonwebtoken": "^9.0.9",
     "@types/node": "^22.15.21",
     "@types/nodemailer": "^6.4.17",
