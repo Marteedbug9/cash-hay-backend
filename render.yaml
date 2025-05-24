@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: cash-hay-backend
+    env: node
+    region: ohio
+    branch: main
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: npx ts-node src/server.ts
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: cash-hay-db
+          property: connectionString
+      - key: JWT_SECRET
+        value: Martine@96_Mhanac_2025_Gonaibo#01011804
+      - key: EMAIL_USER
+        value: martyveson2@gmail.com
+      - key: EMAIL_PASS
+        value: Mhanac@2025
