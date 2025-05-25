@@ -196,9 +196,10 @@ export const resetPassword: RequestHandler = async (req, res) => {
     }
 
     const hashedPassword = await bcrypt.hash(newPassword, 10);
-    await pool.query('UPDATE users SET password = $1, recovery_code = NULL WHERE id = $2', [
-      hashedPassword, userId
-    ]);
+   await pool.query('UPDATE users SET password_hash = $1, recovery_code = NULL WHERE id = $2', [
+  hashedPassword, userId
+]);
+
 
     res.json({ message: 'Mot de passe réinitialisé avec succès.' });
   } catch (err) {
