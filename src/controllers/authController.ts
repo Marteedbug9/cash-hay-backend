@@ -74,6 +74,7 @@ export const register: RequestHandler = async (req, res) => {
 // ➤ Connexion avec username
 export const login: RequestHandler = async (req, res) => {
   const { username, password } = req.body;
+  console.log('🔐 Tentative de connexion pour:', username);
 
   try {
     const result = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
@@ -88,27 +89,22 @@ export const login: RequestHandler = async (req, res) => {
       return res.status(401).json({ error: 'Nom d’utilisateur ou mot de passe incorrect.' });
     }
 
-    const token = jwt.sign(
-      { id: user.id, username: user.username },
-      process.env.JWT_SECRET || 'devsecretkey',
-      { expiresIn: '7d' }
-    );
-
-    res.status(200).json({
+    // temporairement sans token
+    return res.json({
       message: 'Connexion réussie',
-      token,
       user: {
         id: user.id,
         username: user.username,
         email: user.email,
-        full_name: `${user.first_name} ${user.last_name}`
-      }
+        full_name: `${user.first_name} ${user.last_name}`,
+      },
     });
   } catch (error) {
     console.error('❌ Erreur dans login:', error);
     res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
+
 
 // ➤ Profil sécurisé
 export const getProfile: RequestHandler = async (req: AuthRequest, res: Response) => {
