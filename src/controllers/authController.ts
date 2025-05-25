@@ -12,39 +12,35 @@ interface AuthRequest extends Request {
 // ➤ Enregistrement complet
 export const register: RequestHandler = async (req, res) => {
   const {
-    first_name,
-    last_name,
-    gender,
-    address,
-    email,
-    phone,
-    birth_date,
-    birth_country,
-    birth_place,
-    id_type,
-    id_number,
-    id_issue_date,
-    id_expiry_date,
-    username,
-    password
+    first_name, last_name, gender, address, email, phone,
+    birth_date, birth_country, birth_place,
+    id_type, id_number, id_issue_date, id_expiry_date,
+    username, password
   } = req.body;
 
-  if (!first_name || !last_name || !gender || !address || !email || !phone || !birth_date || !birth_country || !birth_place || !id_type || !id_number || !id_issue_date || !id_expiry_date || !username || !password) {
+  if (!first_name || !last_name || !gender || !address || !email || !phone ||
+      !birth_date || !birth_country || !birth_place ||
+      !id_type || !id_number || !id_issue_date || !id_expiry_date ||
+      !username || !password) {
     return res.status(400).json({ error: 'Tous les champs sont requis.' });
   }
 
   try {
     const hashedPassword = await bcrypt.hash(password, 10);
-    const userId = uuidv4();
+    const userId = uuidv4(); // ← Génère un ID unique
 
     const result = await pool.query(
       `INSERT INTO users (
         id, first_name, last_name, gender, address, email, phone,
         birth_date, birth_country, birth_place,
         id_type, id_number, id_issue_date, id_expiry_date,
-        username, password_hash, accept_terms, created_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, true, NOW())
-      RETURNING id, email, first_name, last_name, username`,
+        username, password_hash
+      ) VALUES (
+        $1, $2, $3, $4, $5, $6, $7,
+        $8, $9, $10,
+        $11, $12, $13, $14,
+        $15, $16
+      ) RETURNING id, email, first_name, last_name, username`,
       [
         userId, first_name, last_name, gender, address, email, phone,
         birth_date, birth_country, birth_place,
@@ -53,16 +49,7 @@ export const register: RequestHandler = async (req, res) => {
       ]
     );
 
-    // Envoi email & SMS
-    await sendEmail({
-      to: email,
-      subject: 'Bienvenue sur Cash Hay',
-      text: `Bienvenue ${first_name}, votre compte est en cours de vérification.`
-    });
-
-    await sendSMS(phone, `Bienvenue sur Cash Hay, ${first_name}! Votre compte sera vérifié sous peu.`);
-
-    res.status(201).json({ message: "Inscription réussie. Veuillez vous connecter.", user: result.rows[0] });
+    res.status(201).json({ user: result.rows[0] });
   } catch (err: any) {
     if (err.code === '23505') {
       return res.status(400).json({ error: 'Email ou nom d’utilisateur déjà utilisé.' });
