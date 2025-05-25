@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
 import pool from '../config/db';
 import { sendEmail, sendSMS } from '../utils/notificationUtils';
+import { v4 as uuidv4 } from 'uuid';
 
 interface AuthRequest extends Request {
   user?: any;
@@ -34,24 +35,34 @@ export const register: RequestHandler = async (req, res) => {
 
   try {
     const hashedPassword = await bcrypt.hash(password, 10);
+    const userId = uuidv4();
 
     const result = await pool.query(
       `INSERT INTO users (
-        first_name, last_name, gender, address, email, phone,
+        id, first_name, last_name, gender, address, email, phone,
         birth_date, birth_country, birth_place,
         id_type, id_number, id_issue_date, id_expiry_date,
-        username, password
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+        username, password_hash, accept_terms, created_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, true, NOW())
       RETURNING id, email, first_name, last_name, username`,
       [
-        first_name, last_name, gender, address, email, phone,
+        userId, first_name, last_name, gender, address, email, phone,
         birth_date, birth_country, birth_place,
         id_type, id_number, id_issue_date, id_expiry_date,
         username, hashedPassword
       ]
     );
 
-    res.status(201).json({ user: result.rows[0] });
+    // Envoi email & SMS
+    await sendEmail({
+      to: email,
+      subject: 'Bienvenue sur Cash Hay',
+      text: `Bienvenue ${first_name}, votre compte est en cours de vérification.`
+    });
+
+    await sendSMS(phone, `Bienvenue sur Cash Hay, ${first_name}! Votre compte sera vérifié sous peu.`);
+
+    res.status(201).json({ message: "Inscription réussie. Veuillez vous connecter.", user: result.rows[0] });
   } catch (err: any) {
     if (err.code === '23505') {
       return res.status(400).json({ error: 'Email ou nom d’utilisateur déjà utilisé.' });
@@ -72,7 +83,7 @@ export const login: RequestHandler = async (req, res) => {
     }
 
     const user = result.rows[0];
-    const isMatch = await bcrypt.compare(password, user.password_hash); // ✅ ICI
+    const isMatch = await bcrypt.compare(password, user.password_hash);
 
     if (!isMatch) {
       return res.status(401).json({ error: 'Nom d’utilisateur ou mot de passe incorrect.' });
