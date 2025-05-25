@@ -72,7 +72,7 @@ export const login: RequestHandler = async (req, res) => {
     }
 
     const user = result.rows[0];
-    const isMatch = await bcrypt.compare(password, user.password);
+    const isMatch = await bcrypt.compare(password, user.password_hash); // ✅ ICI
 
     if (!isMatch) {
       return res.status(401).json({ error: 'Nom d’utilisateur ou mot de passe incorrect.' });
