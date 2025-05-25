@@ -4,9 +4,19 @@ import bcrypt from 'bcrypt';
 import pool from '../config/db';
 import { sendEmail, sendSMS } from '../utils/notificationUtils';
 import { v4 as uuidv4 } from 'uuid';
+import  cloudinary  from '../config/cloudinary';
+
+
 
 interface AuthRequest extends Request {
   user?: any;
+}
+
+interface MulterRequest extends Request {
+  files?: {
+    face?: Express.Multer.File[];
+    document?: Express.Multer.File[];
+  };
 }
 
 // ➤ Enregistrement complet
@@ -194,5 +204,41 @@ export const resetPassword: RequestHandler = async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Erreur serveur.' });
+  }
+};
+
+// ➤ Étape 4 : Verification identiter
+
+export const uploadIdentity = async (req: MulterRequest, res: Response) => {
+  try {
+    const faceFile = req.files?.face?.[0];
+    const documentFile = req.files?.document?.[0];
+
+    if (!faceFile || !documentFile) {
+      return res.status(400).json({ error: 'Photos manquantes (visage ou pièce).' });
+    }
+
+    const uploadToCloudinary = (fileBuffer: Buffer, folder: string): Promise<string> => {
+      return new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+          { folder },
+          (error, result) => {
+            if (error || !result) return reject(error);
+            resolve(result.secure_url);
+          }
+        );
+        stream.end(fileBuffer);
+      });
+    };
+
+    const [faceUrl, documentUrl] = await Promise.all([
+      uploadToCloudinary(faceFile.buffer, 'cash-hay/identities/face'),
+      uploadToCloudinary(documentFile.buffer, 'cash-hay/identities/document')
+    ]);
+
+    return res.status(200).json({ faceUrl, documentUrl });
+  } catch (error) {
+    console.error('❌ Erreur serveur:', error);
+    res.status(500).json({ error: 'Erreur lors de l’envoi des fichiers.' });
   }
 };
