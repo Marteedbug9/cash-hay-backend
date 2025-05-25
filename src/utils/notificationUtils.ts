@@ -44,7 +44,8 @@ export const sendEmail = async ({
   }
 };
 
-// 📱 Fonction pour envoyer un SMS via Twilio
+// 📱 Fonction pour envoyer un SMS via Twilio (désactivée temporairement)
+/*
 export const sendSMS = async (phone: string, message: string): Promise<void> => {
   if (!process.env.TWILIO_PHONE) {
     throw new Error('Numéro Twilio non configuré.');
@@ -62,4 +63,10 @@ export const sendSMS = async (phone: string, message: string): Promise<void> => 
     console.error('❌ Erreur lors de l’envoi du SMS :', error);
     throw new Error('Échec de l’envoi du SMS.');
   }
+};
+*/
+
+// 💡 Mode debug temporaire (aucun SMS réellement envoyé)
+export const sendSMS = async (phone: string, message: string): Promise<void> => {
+  console.log(`[DEBUG] SMS désactivé - à ${phone}: ${message}`);
 };
