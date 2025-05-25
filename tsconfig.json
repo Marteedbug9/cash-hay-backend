@@ -1,17 +1,18 @@
 {
   "compilerOptions": {
-    "target": "ES2020",                          // Bonne compatibilité moderne
-    "module": "commonjs",                        // Parfait pour Node.js
-    "moduleResolution": "node",                  // Résolution standard des modules
-    "strict": true,                              // Active toutes les vérifications strictes
-    "esModuleInterop": true,                     // Permet d'importer des modules CommonJS (comme multer)
-    "allowSyntheticDefaultImports": true,        // Nécessaire avec esModuleInterop
-    "skipLibCheck": true,                        // Ignore les erreurs dans node_modules
-    "resolveJsonModule": true,                   // Autorise les imports de .json
-    "forceConsistentCasingInFileNames": true,    // Évite les erreurs sensibles à la casse
-    "outDir": "dist",                            // Répertoire de sortie compilé
-    "rootDir": "src",                            // Dossier source
-    "baseUrl": "./"                              // Pour simplifier les imports relatifs
+    "target": "ES2020",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "strict": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "forceConsistentCasingInFileNames": true,
+    "outDir": "dist",
+    "rootDir": "src",
+    "baseUrl": "./",
+    "typeRoots": ["./node_modules/@types", "./src/types"]
   },
   "include": ["src/**/*"],
   "exclude": [
