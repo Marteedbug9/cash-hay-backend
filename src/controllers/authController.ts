@@ -11,12 +11,6 @@ import { AuthRequest } from '../middlewares/authMiddleware'; // ou src/types
 
 
 
-export interface MulterRequest extends Request {
-  files?: {
-    face?: Express.Multer.File[];
-    document?: Express.Multer.File[];
-  };
-}
 
 
 // ➤ Enregistrement
@@ -222,16 +216,12 @@ export const resetPassword: RequestHandler = async (req, res) => {
 };
 
 // ➤ Upload de pièce d'identité + activation
-export const uploadIdentity = async (req: MulterRequest & AuthRequest, res: Response) => {
+export const uploadIdentity = async (req: Request, res: Response) => {
   try {
-    const userId = req.user?.id;
-    if (!userId) {
-      return res.status(401).json({ error: 'Utilisateur non authentifié.' });
-    }
+    const userId = (req as any).user?.id; // AuthRequest si tu veux le typer proprement
 
     const files = req.files as {
-      face?: Express.Multer.File[];
-      document?: Express.Multer.File[];
+      [fieldname: string]: Express.Multer.File[];
     };
 
     const faceFile = files?.face?.[0];
@@ -240,6 +230,7 @@ export const uploadIdentity = async (req: MulterRequest & AuthRequest, res: Resp
     if (!faceFile || !documentFile) {
       return res.status(400).json({ error: 'Photos manquantes (visage ou pièce).' });
     }
+
 
     const uploadToCloudinary = (fileBuffer: Buffer, folder: string): Promise<string> => {
       return new Promise((resolve, reject) => {
