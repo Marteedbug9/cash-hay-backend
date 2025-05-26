@@ -5,6 +5,8 @@ import pool from '../config/db';
 import { sendEmail, sendSMS } from '../utils/notificationUtils';
 import { v4 as uuidv4 } from 'uuid';
 import cloudinary from '../config/cloudinary';
+import { MulterRequest } from '../types';
+
 
 interface AuthRequest extends Request {
   user?: any;
@@ -216,7 +218,7 @@ export const resetPassword: RequestHandler = async (req, res) => {
 };
 
 // ➤ Upload de pièce d'identité + activation
-export const uploadIdentity = async (req: Request & AuthRequest, res: Response) => {
+export const uploadIdentity = async (req: MulterRequest & AuthRequest, res: Response) => {
   try {
     const userId = req.user?.id;
     if (!userId) {
