@@ -1,22 +1,34 @@
-// src/routes/authRoutes.ts
 import { Router } from 'express';
-import { login, register, getProfile, uploadIdentity } from '../controllers/authController';
+import {
+  login,
+  register,
+  getProfile,
+  uploadIdentity,
+  startRecovery,
+  verifyEmailForRecovery,
+  resetPassword
+} from '../controllers/authController';
+
 import verifyToken from '../middlewares/verifyToken';
 import upload from '../middlewares/upload';
-import { MulterRequest } from '../types'; // ✅ Assure que ce fichier existe
+import { MulterRequest } from '../types'; // Ce type doit exister dans src/types.ts
+import { confirmSuspiciousAttempt } from '../controllers/authController';
+
+
 
 const router = Router();
 
-// ➤ Route pour inscription
+// ➤ Auth
 router.post('/register', register);
-
-// ➤ Route pour connexion
 router.post('/login', login);
-
-// ➤ Route protégée : profil utilisateur
 router.get('/profile', verifyToken, getProfile);
 
-// ✅ Route protégée : Upload identité (photo de visage + pièce d'identité)
+// ➤ Récupération compte (OTP)
+router.post('/recovery/start', startRecovery);
+router.post('/recovery/verify-email', verifyEmailForRecovery);
+router.post('/recovery/reset', resetPassword);
+
+// ➤ Vérification identité avec photo & pièce (protégé par token)
 router.post(
   '/verify-identity',
   verifyToken,
@@ -26,5 +38,5 @@ router.post(
   ]),
   (req, res) => uploadIdentity(req as MulterRequest, res)
 );
-
+router.post('/confirm-suspicious-attempt', confirmSuspiciousAttempt);
 export default router;

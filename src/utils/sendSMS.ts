@@ -1,25 +1,19 @@
-import twilio from 'twilio';
-import dotenv from 'dotenv';
+// src/utils/sendSMS.ts
+import client from './twilioClient';
 
-dotenv.config();
+const fromNumber = process.env.TWILIO_PHONE!;
 
-const accountSid = process.env.TWILIO_ACCOUNT_SID!;
-const authToken = process.env.TWILIO_AUTH_TOKEN!;
-const fromNumber = process.env.TWILIO_PHONE_NUMBER!;
-
-const client = twilio(accountSid, authToken);
-
-const sendSMS = async (to: string, message: string): Promise<void> => {
+export const sendSMS = async (to: string, message: string): Promise<void> => {
   try {
-    await client.messages.create({
+    const result = await client.messages.create({
       body: message,
       from: fromNumber,
-      to: to,
+      to,
     });
+
+    console.log(`📲 SMS envoyé à ${to} ✅ SID: ${result.sid}`);
   } catch (error) {
-    console.error('Erreur lors de l’envoi du SMS :', error);
-    throw error;
+    console.error('❌ Erreur lors de l’envoi du SMS :', error);
+    throw new Error('Échec de l’envoi du SMS.');
   }
 };
-
-export default sendSMS;

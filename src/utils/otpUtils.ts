@@ -34,16 +34,24 @@ export const storeOTP = async (userId: string, otp: string): Promise<void> => {
 };
 
 // Vérifie l'OTP (valide et pas expiré)
-export const verifyOTP = async (userId: string, inputCode: string): Promise<boolean> => {
+export const verifyOTP = async (
+  userId: string,
+  inputCode: string
+): Promise<{ valid: boolean; reason?: string }> => {
   const result = await pool.query(
     'SELECT code, expires_at FROM otps WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1',
     [userId]
   );
 
-  if (result.rows.length === 0) return false;
+  if (result.rows.length === 0) return { valid: false, reason: 'Aucun code trouvé' };
 
   const { code, expires_at } = result.rows[0];
   const now = new Date();
 
-  return code === inputCode && now <= new Date(expires_at);
+  if (now > new Date(expires_at)) return { valid: false, reason: 'Code expiré' };
+  if (code !== inputCode) return { valid: false, reason: 'Code invalide' };
+
+  await pool.query('DELETE FROM otps WHERE user_id = $1', [userId]);
+
+  return { valid: true };
 };

@@ -18,17 +18,32 @@ export const sendSecurityAlertEmail = async (to: string): Promise<void> => {
 };
 
 export const sendOTP = async (phone: string, email: string, otp: string): Promise<void> => {
-  await sendEmail({
-    to: email,
-    subject: 'Votre code de réinitialisation',
-    text: `Code: ${otp}`,
-  });
-  await sendSMS(phone, `Votre code est : ${otp}`);
+  try {
+    await sendEmail({
+      to: email,
+      subject: 'Votre code de réinitialisation',
+      text: `Code: ${otp}`,
+    });
+
+    await sendSMS(phone, `Votre code est : ${otp}`);
+  } catch (error) {
+    console.error('Erreur lors de l’envoi OTP :', error);
+    throw new Error('Échec de l’envoi du code OTP.');
+  }
 };
 
+
 export const storeOTP = async (userId: string, otp: string): Promise<void> => {
-  await db.query(
-    'INSERT INTO otps (user_id, code, created_at) VALUES ($1, $2, NOW())',
-    [userId, otp]
+  await db.query('DELETE FROM otps WHERE user_id = $1', [userId]);
+
+  
+};
+
+export const verifyOTP = async (userId: string, code: string): Promise<boolean> => {
+  const result = await db.query(
+    'SELECT * FROM otps WHERE user_id = $1 AND code = $2 AND expires_at > NOW()',
+    [userId, code]
   );
+
+  return result.rows.length > 0;
 };
