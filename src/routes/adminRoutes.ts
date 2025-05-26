@@ -16,7 +16,7 @@ router.get('/users', authenticateToken, verifyAdmin, async (req, res) => {
     `);
     res.json(result.rows);
   } catch (err) {
-    res.status(500).json({ error: 'Erreur serveur.' });
+    res.status(501).json({ error: 'Erreur serveur.' });
   }
 });
 
@@ -32,7 +32,7 @@ router.patch('/users/:id/verify', authenticateToken, verifyAdmin, async (req, re
     );
     res.json({ message: `Utilisateur ${is_verified ? 'activé' : 'désactivé'} avec succès.` });
   } catch (err) {
-    res.status(500).json({ error: 'Erreur serveur.' });
+    res.status(502).json({ error: 'Erreur serveur.' });
   }
 });
 
@@ -48,7 +48,7 @@ router.patch('/users/:id/status', authenticateToken, verifyAdmin, async (req, re
     );
     res.json({ message: 'Statut mis à jour avec succès.' });
   } catch (err) {
-    res.status(500).json({ error: 'Erreur serveur.' });
+    res.status(503).json({ error: 'Erreur serveur.' });
   }
 });
 
