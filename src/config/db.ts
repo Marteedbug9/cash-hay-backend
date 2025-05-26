@@ -1,17 +1,13 @@
-// src/config/db.ts
-import { Pool } from 'pg';
 import dotenv from 'dotenv';
+dotenv.config(); // <-- doit être AVANT tout
 
-dotenv.config();
+import { Pool } from 'pg';
 
-// 🔍 LOG TEMPORAIRE POUR DIAGNOSTIC
 console.log('🔎 DATABASE_URL utilisée :', process.env.DATABASE_URL);
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: {
-    rejectUnauthorized: false, // Requis par Render
-  },
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false, // ✅ SSL que pour Render
 });
 
 export default pool;
