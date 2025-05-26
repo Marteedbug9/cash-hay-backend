@@ -1,19 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
-import type {MulterRequest } from '../types';
 
-
-interface JwtPayload {
-  id: string;
-  email?: string;
-  role?: 'admin' | 'user';
-}
-
-interface AuthRequest extends Request {
-  user?: JwtPayload;
-}
-
-const verifyToken = (req: AuthRequest, res: Response, next: NextFunction) => {
+const verifyToken = (req: Request, res: Response, next: NextFunction) => {
   const authHeader = req.headers.authorization;
 
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -23,7 +11,7 @@ const verifyToken = (req: AuthRequest, res: Response, next: NextFunction) => {
   const token = authHeader.split(' ')[1];
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'devsecretkey') as JwtPayload;
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'devsecretkey') as Express.UserPayload;
     req.user = decoded;
     next();
   } catch (err) {
@@ -33,4 +21,3 @@ const verifyToken = (req: AuthRequest, res: Response, next: NextFunction) => {
 };
 
 export default verifyToken;
-export type { AuthRequest, JwtPayload };

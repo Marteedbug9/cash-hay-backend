@@ -5,13 +5,18 @@ import pool from '../config/db';
 import { sendEmail, sendSMS } from '../utils/notificationUtils';
 import { v4 as uuidv4 } from 'uuid';
 import cloudinary from '../config/cloudinary';
-import { MulterRequest } from '../types';
+import { AuthRequest } from '../middlewares/authMiddleware'; // ou src/types
 
 
-interface AuthRequest extends Request {
-  user?: any;
+
+
+
+export interface MulterRequest extends Request {
+  files?: {
+    face?: Express.Multer.File[];
+    document?: Express.Multer.File[];
+  };
 }
-
 
 
 // ➤ Enregistrement
@@ -117,7 +122,7 @@ export const login: RequestHandler = async (req, res) => {
 };
 
 // ➤ Récupération de profil
-export const getProfile: RequestHandler = async (req: AuthRequest, res: Response) => {
+export const getProfile = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
 
   try {

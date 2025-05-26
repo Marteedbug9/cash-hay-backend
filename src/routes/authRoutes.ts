@@ -1,3 +1,4 @@
+// src/routes/authRoutes.ts
 import { Router } from 'express';
 import {
   login,
@@ -6,15 +7,12 @@ import {
   uploadIdentity,
   startRecovery,
   verifyEmailForRecovery,
-  resetPassword
+  resetPassword,
+  confirmSuspiciousAttempt
 } from '../controllers/authController';
 
 import verifyToken from '../middlewares/verifyToken';
 import upload from '../middlewares/upload';
-import { MulterRequest } from '../types'; // Ce type doit exister dans src/types.ts
-import { confirmSuspiciousAttempt } from '../controllers/authController';
-
-
 
 const router = Router();
 
@@ -36,7 +34,9 @@ router.post(
     { name: 'face', maxCount: 1 },
     { name: 'document', maxCount: 1 }
   ]),
-  (req, res) => uploadIdentity(req as MulterRequest, res)
+  uploadIdentity // ✅ Pas besoin de cast, le type `req.files` est intégré
 );
+
 router.post('/confirm-suspicious-attempt', confirmSuspiciousAttempt);
+
 export default router;
