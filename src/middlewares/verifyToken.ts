@@ -1,5 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
+import type {MulterRequest } from '../types';
+
 
 interface JwtPayload {
   id: string;
