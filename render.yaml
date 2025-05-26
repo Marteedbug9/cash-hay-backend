@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: cash-hay-backend
+    name: cash-hay-backend-1
     env: node
     region: ohio
     branch: main
@@ -15,8 +15,9 @@ services:
           name: cash-hay-db
           property: connectionString
       - key: JWT_SECRET
-        value: Martine@96_Mhanac_2025_Gonaibo#01011804
+        value: Martine@96_Mhanac_2025_Gonaibo01011804
       - key: EMAIL_USER
-        value: martyveson2@gmail.com
+        value: djwiillmix96@gmail.com
       - key: EMAIL_PASS
-        value: Mhanac@2025
+        value: aqgufcxfxxrkjpzv
+
