@@ -116,9 +116,10 @@ export const login: RequestHandler = async (req, res) => {
       }
     });
 
-  } catch (error) {
-    console.error('❌ Erreur dans login:', error);
-    res.status(500).json({ error: 'Erreur serveur.' });
+  } catch (error: any) {
+  console.error('❌ Erreur dans login:', error.message); // Message d'erreur clair
+  console.error('🔎 Stack trace:', error.stack);          // Ligne exacte qui cause l'erreur
+  res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
 
