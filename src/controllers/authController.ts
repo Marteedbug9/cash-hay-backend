@@ -74,7 +74,11 @@ export const login: RequestHandler = async (req, res) => {
   const { username, password } = req.body;
 
   try {
+    console.log('🔍 Tentative de recherche utilisateur...');
     const result = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
+
+    console.log('📦 Résultat SQL:', result.rows);
+    
     if (result.rows.length === 0) {
       return res.status(401).json({ error: 'Nom d’utilisateur ou mot de passe incorrect.' });
     }
