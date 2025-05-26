@@ -10,12 +10,7 @@ interface AuthRequest extends Request {
   user?: any;
 }
 
-interface MulterRequest extends Request {
-  files?: {
-    face?: Express.Multer.File[];
-    document?: Express.Multer.File[];
-  };
-}
+
 
 // ➤ Enregistrement
 export const register: RequestHandler = async (req, res) => {
@@ -69,16 +64,14 @@ export const register: RequestHandler = async (req, res) => {
 
 // ➤ Connexion
 export const login: RequestHandler = async (req, res) => {
-  console.log('🟡 Requête login reçue avec :', req.body); // ✅ LOG ajouté
-
+  console.log('🟡 Requête login reçue avec :', req.body);
   const { username, password } = req.body;
 
   try {
     console.log('🔍 Tentative de recherche utilisateur...');
     const result = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
-
     console.log('📦 Résultat SQL:', result.rows);
-    
+
     if (result.rows.length === 0) {
       return res.status(401).json({ error: 'Nom d’utilisateur ou mot de passe incorrect.' });
     }
@@ -115,14 +108,12 @@ export const login: RequestHandler = async (req, res) => {
         role: user.role || 'user',
       }
     });
-
   } catch (error: any) {
-  console.error('❌ Erreur dans login:', error.message); // Message d'erreur clair
-  console.error('🔎 Stack trace:', error.stack);          // Ligne exacte qui cause l'erreur
-  res.status(500).json({ error: 'Erreur serveur.' });
+    console.error('❌ Erreur dans login:', error.message);
+    console.error('🔎 Stack trace:', error.stack);
+    res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
-
 
 // ➤ Récupération de profil
 export const getProfile: RequestHandler = async (req: AuthRequest, res: Response) => {
@@ -225,15 +216,20 @@ export const resetPassword: RequestHandler = async (req, res) => {
 };
 
 // ➤ Upload de pièce d'identité + activation
-export const uploadIdentity = async (req: MulterRequest & AuthRequest, res: Response) => {
+export const uploadIdentity = async (req: Request & AuthRequest, res: Response) => {
   try {
     const userId = req.user?.id;
     if (!userId) {
       return res.status(401).json({ error: 'Utilisateur non authentifié.' });
     }
 
-    const faceFile = req.files?.face?.[0];
-    const documentFile = req.files?.document?.[0];
+    const files = req.files as {
+      face?: Express.Multer.File[];
+      document?: Express.Multer.File[];
+    };
+
+    const faceFile = files?.face?.[0];
+    const documentFile = files?.document?.[0];
 
     if (!faceFile || !documentFile) {
       return res.status(400).json({ error: 'Photos manquantes (visage ou pièce).' });
