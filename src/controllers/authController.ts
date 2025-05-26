@@ -218,10 +218,10 @@ export const resetPassword: RequestHandler = async (req, res) => {
 // ➤ Upload de pièce d'identité + activation
 export const uploadIdentity = async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).user?.id; // AuthRequest si tu veux le typer proprement
+    const userId = (req as any).user?.id; // Tu peux typer proprement avec AuthRequest si tu veux
 
     const files = req.files as {
-      [fieldname: string]: Express.Multer.File[];
+      [fieldname: string]: import('multer').File[];
     };
 
     const faceFile = files?.face?.[0];
@@ -230,7 +230,6 @@ export const uploadIdentity = async (req: Request, res: Response) => {
     if (!faceFile || !documentFile) {
       return res.status(400).json({ error: 'Photos manquantes (visage ou pièce).' });
     }
-
 
     const uploadToCloudinary = (fileBuffer: Buffer, folder: string): Promise<string> => {
       return new Promise((resolve, reject) => {
