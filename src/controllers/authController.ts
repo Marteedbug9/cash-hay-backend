@@ -69,6 +69,8 @@ export const register: RequestHandler = async (req, res) => {
 
 // ➤ Connexion
 export const login: RequestHandler = async (req, res) => {
+  console.log('🟡 Requête login reçue avec :', req.body); // ✅ LOG ajouté
+
   const { username, password } = req.body;
 
   try {
@@ -83,7 +85,6 @@ export const login: RequestHandler = async (req, res) => {
       return res.status(401).json({ error: 'Nom d’utilisateur ou mot de passe incorrect.' });
     }
 
-    // ✅ Bloquer la connexion si utilisateur est blacklisté ou décédé
     if (user.is_blacklisted) {
       return res.status(403).json({ error: 'Ce compte est sur liste noire.' });
     }
@@ -92,24 +93,23 @@ export const login: RequestHandler = async (req, res) => {
       return res.status(403).json({ error: 'Ce compte est marqué comme décédé.' });
     }
 
-    // Génération du token
     const token = jwt.sign(
       { id: user.id, email: user.email, role: user.role || 'user' },
       process.env.JWT_SECRET || 'devsecretkey',
       { expiresIn: '1h' }
     );
 
-   res.status(200).json({
-  message: 'Connexion réussie',
-  token,
-  user: {
-    id: user.id,
-    username: user.username,
-    email: user.email,
-    full_name: `${user.first_name} ${user.last_name}`,
-    is_verified: user.is_verified || false,
-    role: user.role || 'user'  // ← Important pour le routing admin
-  }
+    res.status(200).json({
+      message: 'Connexion réussie',
+      token,
+      user: {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        full_name: `${user.first_name} ${user.last_name}`,
+        is_verified: user.is_verified || false,
+        role: user.role || 'user',
+      }
     });
 
   } catch (error) {
