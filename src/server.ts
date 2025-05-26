@@ -17,6 +17,6 @@ pool.query('SELECT NOW()')
     });
   })
   .catch(err => {
-    console.error('❌ Échec connexion PostgreSQL:', err.message);
+    console.error('❌ Échec connexion PostgreSQL:', err);
     process.exit(1); // Arrête l'app si la connexion échoue
   });
