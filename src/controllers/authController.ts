@@ -30,6 +30,8 @@ export const register: RequestHandler = async (req, res) => {
   }
 
   try {
+    console.log('🟢 Données reçues pour register :', req.body); // ✅ log les données envoyées
+
     const hashedPassword = await bcrypt.hash(password, 10);
     const userId = uuidv4();
 
@@ -58,8 +60,10 @@ export const register: RequestHandler = async (req, res) => {
     if (err.code === '23505') {
       return res.status(400).json({ error: 'Email ou nom d’utilisateur déjà utilisé.' });
     }
-    console.error(err);
-    res.status(500).json({ error: 'Erreur serveur.' });
+
+    console.error('❌ Erreur SQL :', err.message);              // message simple
+    console.error('📄 Détail complet :', err);                  // tous les détails
+    res.status(500).json({ error: err.message || 'Erreur serveur.' });
   }
 };
 
