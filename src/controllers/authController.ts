@@ -15,55 +15,64 @@ import { AuthRequest } from '../middlewares/authMiddleware'; // ou src/types
 
 // ➤ Enregistrement
 export const register: RequestHandler = async (req, res) => {
+  console.log('🟡 Données reçues:', req.body);
+
   const {
-    first_name, last_name, gender, address, email, phone,
+    first_name, last_name, gender, address, city, department, zip_code, country,
+    email, phone,
     birth_date, birth_country, birth_place,
     id_type, id_number, id_issue_date, id_expiry_date,
-    username, password
+    username, password,
+    accept_terms
   } = req.body;
 
-  if (!first_name || !last_name || !gender || !address || !email || !phone ||
+  // Vérifie tous les champs requis
+  if (!first_name || !last_name || !gender || !address || !city || !department || !country ||
+      !email || !phone ||
       !birth_date || !birth_country || !birth_place ||
       !id_type || !id_number || !id_issue_date || !id_expiry_date ||
-      !username || !password) {
+      !username || !password || accept_terms !== true) {
     return res.status(400).json({ error: 'Tous les champs sont requis.' });
   }
 
   try {
-    console.log('🟢 Données reçues pour register :', req.body); // ✅ log les données envoyées
-
     const hashedPassword = await bcrypt.hash(password, 10);
     const userId = uuidv4();
 
     const result = await pool.query(
       `INSERT INTO users (
-        id, first_name, last_name, gender, address, email, phone,
+        id, first_name, last_name, gender, address, city, department, zip_code, country,
+        email, phone,
         birth_date, birth_country, birth_place,
         id_type, id_number, id_issue_date, id_expiry_date,
-        username, password_hash, role
+        username, password_hash, role, accept_terms
       ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7,
-        $8, $9, $10,
-        $11, $12, $13, $14,
-        $15, $16, 'user'
+        $1, $2, $3, $4, $5, $6, $7, $8, $9,
+        $10, $11,
+        $12, $13, $14,
+        $15, $16, $17, $18,
+        $19, $20, 'user', $21
       ) RETURNING id, email, first_name, last_name, username`,
       [
-        userId, first_name, last_name, gender, address, email, phone,
+        userId, first_name, last_name, gender, address, city, department, zip_code || '', country,
+        email, phone,
         birth_date, birth_country, birth_place,
         id_type, id_number, id_issue_date, id_expiry_date,
-        username, hashedPassword
+        username, hashedPassword, true
       ]
     );
 
     res.status(201).json({ user: result.rows[0] });
+
   } catch (err: any) {
     if (err.code === '23505') {
       return res.status(400).json({ error: 'Email ou nom d’utilisateur déjà utilisé.' });
     }
 
-    console.error('❌ Erreur SQL :', err.message);              // message simple
-    console.error('📄 Détail complet :', err);  
-    console.error('📄 Stack complète :', err.stack);                // tous les détails
+    console.error('❌ Erreur SQL :', err.message);
+    console.error('📄 Détail complet :', err);
+    console.error('📄 Stack complète :', err.stack);
+
     res.status(500).json({ error: err.message || 'Erreur serveur.' });
   }
 };
