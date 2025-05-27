@@ -18,15 +18,15 @@ export const register: RequestHandler = async (req, res) => {
   console.log('🟡 Données reçues:', req.body);
 
   const {
-  first_name, last_name, gender, address, email, phone,
-  birth_date, birth_country, birth_place,
-  id_type, id_number, id_issue_date, id_expiry_date,
-  username, password,
-  city, department, zip_code, country, accept_terms
-} = req.body;
+    first_name, last_name, gender, address, city, department, zip_code = '', country,
+    email, phone,
+    birth_date, birth_country, birth_place,
+    id_type, id_number, id_issue_date, id_expiry_date,
+    username, password,
+    accept_terms
+  } = req.body;
 
-
-  // Vérifie tous les champs requis
+  // 🛑 Validation côté serveur
   if (!first_name || !last_name || !gender || !address || !city || !department || !country ||
       !email || !phone ||
       !birth_date || !birth_country || !birth_place ||
@@ -36,34 +36,33 @@ export const register: RequestHandler = async (req, res) => {
   }
 
   try {
-    const hashedPassword = await bcrypt.hash(password, 10);
     const userId = uuidv4();
+    const hashedPassword = await bcrypt.hash(password, 10);
 
     const result = await pool.query(
-  `INSERT INTO users (
-    id, first_name, last_name, gender, address, city, department, zip_code, country,
-    email, phone,
-    birth_date, birth_country, birth_place,
-    id_type, id_number, id_issue_date, id_expiry_date,
-    username, password_hash, role, accept_terms
-  ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9,
-    $10, $11,
-    $12, $13, $14,
-    $15, $16, $17, $18,
-    $19, $20, $21, $22
-  ) RETURNING id, email, first_name, last_name, username`,
-  [
-    userId, first_name, last_name, gender, address, city, department, zip_code || '', country,
-    email, phone,
-    birth_date, birth_country, birth_place,
-    id_type, id_number, id_issue_date, id_expiry_date,
-    username, hashedPassword, 'user', true
-  ]
-);
+      `INSERT INTO users (
+        id, first_name, last_name, gender, address, city, department, zip_code, country,
+        email, phone,
+        birth_date, birth_country, birth_place,
+        id_type, id_number, id_issue_date, id_expiry_date,
+        username, password_hash, role, accept_terms
+      ) VALUES (
+        $1, $2, $3, $4, $5, $6, $7, $8, $9,
+        $10, $11,
+        $12, $13, $14,
+        $15, $16, $17, $18,
+        $19, $20, 'user', $21
+      ) RETURNING id, email, first_name, last_name, username`,
+      [
+        userId, first_name, last_name, gender, address, city, department, zip_code, country,
+        email, phone,
+        birth_date, birth_country, birth_place,
+        id_type, id_number, id_issue_date, id_expiry_date,
+        username, hashedPassword, true
+      ]
+    );
 
     res.status(201).json({ user: result.rows[0] });
-
   } catch (err: any) {
     if (err.code === '23505') {
       return res.status(400).json({ error: 'Email ou nom d’utilisateur déjà utilisé.' });
@@ -71,9 +70,7 @@ export const register: RequestHandler = async (req, res) => {
 
     console.error('❌ Erreur SQL :', err.message);
     console.error('📄 Détail complet :', err);
-    console.error('📄 Stack complète :', err.stack);
-
-    res.status(500).json({ error: err.message || 'Erreur serveur.' });
+    res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
 
@@ -125,6 +122,8 @@ export const login: RequestHandler = async (req, res) => {
   } catch (error: any) {
     console.error('❌ Erreur dans login:', error.message);
     console.error('🔎 Stack trace:', error.stack);
+     console.error('📄 Détail complet :', error);
+    
     res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
