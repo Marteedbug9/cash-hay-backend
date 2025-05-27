@@ -62,7 +62,8 @@ export const register: RequestHandler = async (req, res) => {
     }
 
     console.error('❌ Erreur SQL :', err.message);              // message simple
-    console.error('📄 Détail complet :', err);                  // tous les détails
+    console.error('📄 Détail complet :', err);  
+    console.error('📄 Stack complète :', err.stack);                // tous les détails
     res.status(500).json({ error: err.message || 'Erreur serveur.' });
   }
 };
