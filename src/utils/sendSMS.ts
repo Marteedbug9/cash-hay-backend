@@ -1,7 +1,11 @@
 // src/utils/sendSMS.ts
 import client from './twilioClient';
 
-const fromNumber = process.env.TWILIO_PHONE!;
+const fromNumber = process.env.TWILIO_PHONE;
+
+if (!fromNumber) {
+  throw new Error('❌ TWILIO_PHONE est manquant dans le fichier .env');
+}
 
 export const sendSMS = async (to: string, message: string): Promise<void> => {
   try {

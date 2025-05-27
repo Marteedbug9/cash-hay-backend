@@ -11,7 +11,7 @@ import {
   confirmSuspiciousAttempt
 } from '../controllers/authController';
 
-import verifyToken from '../middlewares/verifyToken';
+import { authenticateToken } from '../middlewares/authMiddleware';
 import upload from '../middlewares/upload';
 
 const router = Router();
@@ -19,7 +19,7 @@ const router = Router();
 // ➤ Auth
 router.post('/register', register);
 router.post('/login', login);
-router.get('/profile', verifyToken, getProfile);
+router.get('/profile', authenticateToken, getProfile);
 
 // ➤ Récupération compte (OTP)
 router.post('/recovery/start', startRecovery);
@@ -29,14 +29,15 @@ router.post('/recovery/reset', resetPassword);
 // ➤ Vérification identité avec photo & pièce (protégé par token)
 router.post(
   '/verify-identity',
-  verifyToken,
+  authenticateToken,
   upload.fields([
     { name: 'face', maxCount: 1 },
     { name: 'document', maxCount: 1 }
   ]),
-  uploadIdentity // ✅ Pas besoin de cast, le type `req.files` est intégré
+  uploadIdentity
 );
 
+// ➤ Confirmation de tentative suspecte
 router.post('/confirm-suspicious-attempt', confirmSuspiciousAttempt);
 
 export default router;

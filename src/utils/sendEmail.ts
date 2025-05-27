@@ -5,10 +5,11 @@ import nodemailer from 'nodemailer';
 export interface EmailOptions {
   to: string;
   subject: string;
-  text: string;
+  text?: string;
+  html?: string;
 }
 
-const sendEmail = async ({ to, subject, text }: EmailOptions): Promise<void> => {
+const sendEmail = async ({ to, subject, text, html }: EmailOptions): Promise<void> => {
   const user = process.env.EMAIL_USER;
   const pass = process.env.EMAIL_PASS;
 
@@ -19,7 +20,7 @@ const sendEmail = async ({ to, subject, text }: EmailOptions): Promise<void> => 
   const transporter = nodemailer.createTransport({
     host: 'smtp.gmail.com',
     port: 587,
-    secure: false, // true pour 465 avec SSL
+    secure: false, // true pour port 465
     auth: {
       user,
       pass,
@@ -31,6 +32,7 @@ const sendEmail = async ({ to, subject, text }: EmailOptions): Promise<void> => 
     to,
     subject,
     text,
+    html,
   };
 
   try {

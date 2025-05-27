@@ -26,7 +26,7 @@ export const register: RequestHandler = async (req, res) => {
     accept_terms
   } = req.body;
 
-  // 🛑 Validation côté serveur
+  // ✅ Vérification des champs requis
   if (!first_name || !last_name || !gender || !address || !city || !department || !country ||
       !email || !phone ||
       !birth_date || !birth_country || !birth_place ||
@@ -38,31 +38,50 @@ export const register: RequestHandler = async (req, res) => {
   try {
     const userId = uuidv4();
     const hashedPassword = await bcrypt.hash(password, 10);
+    const recoveryCode = uuidv4(); // Code unique pour la récupération
 
     const result = await pool.query(
-  `INSERT INTO users (
-    id, first_name, last_name, gender, address, city, department, zip_code, country,
-    email, phone,
-    birth_date, birth_country, birth_place,
-    id_type, id_number, id_issue_date, id_expiry_date,
-    username, password_hash, role, accept_terms, recovery_code
-  ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9,
-    $10, $11,
-    $12, $13, $14,
-    $15, $16, $17, $18,
-    $19, $20, $21, $22, $23
-  ) RETURNING id, email, first_name, last_name, username`,
-  [
-    userId, first_name, last_name, gender, address, city, department, zip_code || '', country,
-    email, phone,
-    birth_date, birth_country, birth_place,
-    id_type, id_number, id_issue_date, id_expiry_date,
-    username, hashedPassword, 'user', true, null // <--- Ajout de recovery_code
-  ]
+      `INSERT INTO users (
+        id, first_name, last_name, gender, address, city, department, zip_code, country,
+        email, phone,
+        birth_date, birth_country, birth_place,
+        id_type, id_number, id_issue_date, id_expiry_date,
+        username, password_hash, role, accept_terms, recovery_code
+      ) VALUES (
+        $1, $2, $3, $4, $5, $6, $7, $8, $9,
+        $10, $11,
+        $12, $13, $14,
+        $15, $16, $17, $18,
+        $19, $20, $21, $22, $23
+      ) RETURNING id, email, first_name, last_name, username`,
+      [
+        userId, first_name, last_name, gender, address, city, department, zip_code, country,
+        email, phone,
+        birth_date, birth_country, birth_place,
+        id_type, id_number, id_issue_date, id_expiry_date,
+        username, hashedPassword, 'user', true, recoveryCode
+      ]
+    );
+
+     
+
+// Après insertion réussie du user :
+
+ // ✅ Envoi Email
+await sendEmail({
+  to: email,
+  subject: 'Bienvenue sur Cash Hay',
+  text: `Bonjour ${first_name},\n\nBienvenue sur Cash Hay ! Votre compte a été créé avec succès. Veuillez compléter la vérification d'identité pour l'activation.\n\nL'équipe Cash Hay.`
+});
+
+// ✅ Envoi SMS
+await sendSMS(
+  phone,
+  `Bienvenue ${first_name} ! Votre compte Cash Hay est créé. Complétez votre vérification d'identité pour l'activer.`
 );
 
-    res.status(201).json({ user: result.rows[0] });
+    return res.status(201).json({ user: result.rows[0] });
+
   } catch (err: any) {
     if (err.code === '23505') {
       return res.status(400).json({ error: 'Email ou nom d’utilisateur déjà utilisé.' });
@@ -70,7 +89,7 @@ export const register: RequestHandler = async (req, res) => {
 
     console.error('❌ Erreur SQL :', err.message);
     console.error('📄 Détail complet :', err);
-    res.status(500).json({ error: 'Erreur serveur.' });
+    return res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
 

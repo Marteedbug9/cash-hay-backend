@@ -18,7 +18,7 @@ export const sendOTP = async (userId: string, phone: string, email: string): Pro
   });
 
   await sendSMS(phone, `Votre code de vérification Cash Hay est : ${otp}`);
-
+  console.log(`✅ OTP "${otp}" envoyé à ${phone} (SMS) et ${email} (email) pour user ${userId}`);
   await storeOTP(userId, otp);
 };
 
