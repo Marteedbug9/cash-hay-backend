@@ -18,13 +18,13 @@ export const register: RequestHandler = async (req, res) => {
   console.log('🟡 Données reçues:', req.body);
 
   const {
-    first_name, last_name, gender, address, city, department, zip_code, country,
-    email, phone,
-    birth_date, birth_country, birth_place,
-    id_type, id_number, id_issue_date, id_expiry_date,
-    username, password,
-    accept_terms
-  } = req.body;
+  first_name, last_name, gender, address, email, phone,
+  birth_date, birth_country, birth_place,
+  id_type, id_number, id_issue_date, id_expiry_date,
+  username, password,
+  city, department, zip_code, country, accept_terms
+} = req.body;
+
 
   // Vérifie tous les champs requis
   if (!first_name || !last_name || !gender || !address || !city || !department || !country ||
