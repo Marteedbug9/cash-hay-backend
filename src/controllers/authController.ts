@@ -131,7 +131,19 @@ if (!user.is_verified) {
     if (user.is_blacklisted) {
       return res.status(403).json({ error: 'Ce compte est sur liste noire.' });
     }
+    if (!user.is_otp_verified) {
+  const code = Math.floor(100000 + Math.random() * 900000).toString();
 
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+  await pool.query(
+    'INSERT INTO otps (user_id, code, created_at, expires_at) VALUES ($1, $2, NOW(), $3)',
+    [user.id, code, expiresAt]
+  );
+
+  // Optionnel : envoyer le code par email/SMS ici
+  console.log(`📩 Code OTP pour ${user.username}: ${code}`);
+}
     if (user.is_deceased) {
       return res.status(403).json({ error: 'Ce compte est marqué comme décédé.' });
     }

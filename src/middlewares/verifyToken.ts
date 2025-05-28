@@ -12,6 +12,12 @@ const verifyToken = (req: Request, res: Response, next: NextFunction) => {
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'devsecretkey') as Express.UserPayload;
+
+    // ✅ Si le payload contient is_otp_verified: false → bloquer
+    if (decoded.is_otp_verified === false) {
+      return res.status(401).json({ error: 'OTP non vérifié. Veuillez compléter la vérification.' });
+    }
+
     req.user = decoded;
     next();
   } catch (err) {
@@ -19,5 +25,6 @@ const verifyToken = (req: Request, res: Response, next: NextFunction) => {
     return res.status(403).json({ error: 'Accès non autorisé.' });
   }
 };
+
 
 export default verifyToken;
