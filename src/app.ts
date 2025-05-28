@@ -10,7 +10,7 @@ app.use(cors());
 app.use(express.json());
 
 // 🔐 Routes publiques et protégées utilisateur
-app.use('/api/auth', authRoutes);
+app.use('/api/', authRoutes);
 
 // 🛡️ Routes réservées aux administrateurs
 app.use('/api/admin', adminRoutes);
