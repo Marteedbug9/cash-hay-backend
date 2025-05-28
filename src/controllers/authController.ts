@@ -104,12 +104,14 @@ export const login: RequestHandler = async (req, res) => {
 
     if (result.rows.length === 0) {
       return res.status(401).json({ error: 'Nom d’utilisateur ou mot de passe incorrect.' });
+
     }
 
     const user = result.rows[0];
     const isMatch = await bcrypt.compare(password, user.password_hash);
     if (!isMatch) {
       return res.status(401).json({ error: 'Nom d’utilisateur ou mot de passe incorrect.' });
+
     }
 
     if (user.is_blacklisted) {
