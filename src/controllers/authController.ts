@@ -118,9 +118,13 @@ export const login: RequestHandler = async (req, res) => {
     const user = result.rows[0];
     const isMatch = await bcrypt.compare(password, user.password_hash);
     if (!isMatch) {
-      return res.status(401).json({ error: 'Nom d’utilisateur ou mot de passe incorrect.' });
+  return res.status(401).json({ error: 'Nom d’utilisateur ou mot de passe incorrect.' });
+}
 
-    }
+if (!user.is_verified) {
+  return res.status(403).json({ error: 'Compte inactif. Veuillez effectuer la vérification d’identité.' });
+}
+
 
     if (user.is_blacklisted) {
       return res.status(403).json({ error: 'Ce compte est sur liste noire.' });
@@ -260,10 +264,12 @@ export const resetPassword: RequestHandler = async (req, res) => {
 // ➤ Upload de pièce d'identité + activation
 export const uploadIdentity = async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).user?.id; // Tu peux typer proprement avec AuthRequest si tu veux
+    const userId = (req as any).user?.id;
+    const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+    const userAgent = req.headers['user-agent'];
 
     const files = req.files as {
-      [fieldname: string]: import('multer').File[];
+      [fieldname: string]: Express.Multer.File[];
     };
 
     const faceFile = files?.face?.[0];
@@ -291,19 +297,39 @@ export const uploadIdentity = async (req: Request, res: Response) => {
       uploadToCloudinary(documentFile.buffer, 'cash-hay/identities/document')
     ]);
 
-    await pool.query('UPDATE users SET is_verified = true WHERE id = $1', [userId]);
+    await pool.query(
+      `UPDATE users 
+       SET is_verified = true, 
+           verified_at = NOW(), 
+           face_url = $1, 
+           document_url = $2 
+       WHERE id = $3`,
+      [faceUrl, documentUrl, userId]
+    );
+
+    await pool.query(
+      `INSERT INTO audit_logs (user_id, action, details, ip_address, user_agent)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [
+        userId,
+        'upload_identity',
+        `Vérification identité : photo visage et pièce soumises.`,
+        ip?.toString(),
+        userAgent || 'N/A'
+      ]
+    );
 
     return res.status(200).json({
       message: 'Vérification complétée. Compte activé.',
       faceUrl,
       documentUrl
     });
+
   } catch (error) {
     console.error('❌ Erreur upload identité:', error);
     res.status(500).json({ error: 'Erreur lors de l’envoi des fichiers.' });
   }
 };
-
 // ➤ Renvoyer un code OTP
 
 export const resendOTP: RequestHandler = async (req, res) => {
