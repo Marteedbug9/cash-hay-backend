@@ -26,6 +26,14 @@ export const register: RequestHandler = async (req, res) => {
     accept_terms
   } = req.body;
 
+   const usernameRegex = /^[a-zA-Z0-9@#%&._-]{3,30}$/;
+
+  if (!username || !usernameRegex.test(username)) {
+    return res.status(400).json({
+      error: "Nom d’utilisateur invalide. Seuls les caractères alphanumériques et @ # % & . _ - sont autorisés (3-30 caractères)."
+    });
+  }
+
   // ✅ Vérification des champs requis
   if (!first_name || !last_name || !gender || !address || !city || !department || !country ||
       !email || !phone ||
