@@ -20,4 +20,9 @@ app.get('/healthz', (req: express.Request, res: express.Response) => {
   res.status(200).json({ status: 'OK' });
 });
 
+// ✅ Répond à GET /api pour éviter l'erreur 404
+app.get('/api', (req: express.Request, res: express.Response) => {
+  res.status(200).json({ message: '✅ API Cash Hay opérationnelle' });
+});
+
 export default app;
