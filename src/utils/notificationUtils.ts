@@ -53,17 +53,17 @@ export const sendSMS = async (
   phone: string,
   message: string
 ): Promise<void> => {
-  const { TWILIO_PHONE } = process.env;
+  const { TWILIO_PHONE_NUMBER } = process.env;
 
-  if (!TWILIO_PHONE) {
-    throw new Error('TWILIO_PHONE manquant dans .env');
+  if (!TWILIO_PHONE_NUMBER) {
+    throw new Error('TWILIO_PHONE_NUMBER manquant dans .env');
   }
 
   try {
     const result = await twilioClient.messages.create({
       body: message,
       to: phone,
-      from: TWILIO_PHONE,
+      from: TWILIO_PHONE_NUMBER,
     });
 
     console.log(`📱 SMS envoyé à ${phone} ✅ SID: ${result.sid}`);
