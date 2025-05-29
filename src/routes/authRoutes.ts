@@ -8,11 +8,12 @@ import {
   startRecovery,
   verifyEmailForRecovery,
   resetPassword,
-  confirmSuspiciousAttempt
+  confirmSuspiciousAttempt, verifyOTP, resendOTP 
 } from '../controllers/authController';
 
 import { authenticateToken } from '../middlewares/authMiddleware';
 import upload from '../middlewares/upload';
+
 
 const router = Router();
 
@@ -36,6 +37,11 @@ router.post(
   ]),
   uploadIdentity
 );
+// ➤ Vérification OTP
+router.post('/verify-otp', verifyOTP);
+router.post('/resend-otp', resendOTP);
+
+
 
 // ➤ Confirmation de tentative suspecte
 router.post('/confirm-suspicious-attempt', confirmSuspiciousAttempt);

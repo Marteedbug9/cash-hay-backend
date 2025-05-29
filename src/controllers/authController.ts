@@ -114,58 +114,49 @@ export const login: RequestHandler = async (req, res) => {
 
     if (result.rows.length === 0) {
       return res.status(401).json({ error: 'Nom d’utilisateur ou mot de passe incorrect.' });
+
     }
 
     const user = result.rows[0];
     const isMatch = await bcrypt.compare(password, user.password_hash);
-
     if (!isMatch) {
-      return res.status(401).json({ error: 'Nom d’utilisateur ou mot de passe incorrect.' });
-    }
+  return res.status(401).json({ error: 'Nom d’utilisateur ou mot de passe incorrect.' });
+}
 
-    if (!user.is_verified) {
-      return res.status(403).json({ error: 'Compte inactif. Veuillez effectuer la vérification d’identité.' });
-    }
+if (!user.is_verified) {
+  return res.status(403).json({ error: 'Compte inactif. Veuillez effectuer la vérification d’identité.' });
+}
+
 
     if (user.is_blacklisted) {
       return res.status(403).json({ error: 'Ce compte est sur liste noire.' });
     }
+    if (!user.is_otp_verified) {
+  const code = Math.floor(100000 + Math.random() * 900000).toString();
 
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+  await pool.query(
+    'INSERT INTO otps (user_id, code, created_at, expires_at) VALUES ($1, $2, NOW(), $3)',
+    [user.id, code, expiresAt]
+  );
+
+  // Optionnel : envoyer le code par email/SMS ici
+  console.log(`📩 Code OTP pour ${user.username}: ${code}`);
+}
     if (user.is_deceased) {
       return res.status(403).json({ error: 'Ce compte est marqué comme décédé.' });
     }
 
-    // ✅ Envoie un OTP si non encore validé
-    if (!user.is_otp_verified) {
-      const code = Math.floor(100000 + Math.random() * 900000).toString();
-      const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
-
-      await pool.query(
-        'INSERT INTO otps (user_id, code, created_at, expires_at) VALUES ($1, $2, NOW(), $3)',
-        [user.id, code, expiresAt]
-      );
-
-      // Tu peux envoyer ici : await sendOTP(user.id, user.phone, user.email);
-      console.log(`📩 Code OTP pour ${user.username}: ${code}`);
-    }
-
-    // ✅ Inclure is_otp_verified dans le token
     const token = jwt.sign(
-      {
-        id: user.id,
-        email: user.email,
-        role: user.role || 'user',
-        is_otp_verified: user.is_otp_verified || false, // ✅ essentiel
-      },
+      { id: user.id, email: user.email, role: user.role || 'user' },
       process.env.JWT_SECRET || 'devsecretkey',
       { expiresIn: '1h' }
     );
 
-    // ✅ Envoie requiresOTP au frontend
-    return res.status(200).json({
+    res.status(200).json({
       message: 'Connexion réussie',
       token,
-      requiresOTP: !user.is_otp_verified, // ✅ frontend s'en sert pour rediriger
       user: {
         id: user.id,
         username: user.username,
@@ -173,13 +164,17 @@ export const login: RequestHandler = async (req, res) => {
         full_name: `${user.first_name} ${user.last_name}`,
         is_verified: user.is_verified || false,
         role: user.role || 'user',
-      },
+      }
     });
   } catch (error: any) {
     console.error('❌ Erreur dans login:', error.message);
-    return res.status(500).json({ error: 'Erreur serveur.' });
+    console.error('🔎 Stack trace:', error.stack);
+     console.error('📄 Détail complet :', error);
+    
+    res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
+
 // ➤ Récupération de profil
 export const getProfile = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
@@ -467,5 +462,68 @@ export const confirmSuspiciousAttempt: RequestHandler = async (req, res) => {
   } catch (err) {
     console.error('Erreur de confirmation de sécurité :', err);
     res.status(500).json({ error: 'Erreur serveur lors de la confirmation.' });
+  }
+};
+
+// ➤ Vérification OTP après login
+export const verifyOTP: RequestHandler = async (req, res) => {
+  const { userId, code } = req.body;
+
+  if (!userId || !code) {
+    return res.status(400).json({ error: 'ID utilisateur et code requis.' });
+  }
+
+  try {
+    const otpRes = await pool.query(
+      'SELECT code, expires_at FROM otps WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1',
+      [userId]
+    );
+
+    if (otpRes.rows.length === 0) {
+      return res.status(404).json({ valid: false, reason: 'Aucun code trouvé.' });
+    }
+
+    const { code: storedCode, expires_at } = otpRes.rows[0];
+    const now = new Date();
+
+    if (now > new Date(expires_at)) {
+      return res.status(400).json({ valid: false, reason: 'Code expiré.' });
+    }
+
+    if (code !== storedCode) {
+      return res.status(400).json({ valid: false, reason: 'Code invalide.' });
+    }
+
+    // Supprimer tous les codes OTP de l'utilisateur
+    await pool.query('DELETE FROM otps WHERE user_id = $1', [userId]);
+
+    // Marquer comme vérifié
+    await pool.query('UPDATE users SET is_otp_verified = true WHERE id = $1', [userId]);
+
+    // Générer un nouveau token
+    const userRes = await pool.query('SELECT * FROM users WHERE id = $1', [userId]);
+    const user = userRes.rows[0];
+
+    const token = jwt.sign(
+      { id: user.id, email: user.email, role: user.role || 'user' },
+      process.env.JWT_SECRET || 'devsecretkey',
+      { expiresIn: '1h' }
+    );
+
+    res.json({
+      valid: true,
+      token,
+      user: {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        full_name: `${user.first_name} ${user.last_name}`,
+        is_verified: user.is_verified || false,
+        role: user.role || 'user',
+      }
+    });
+  } catch (err) {
+    console.error('Erreur vérification OTP :', err);
+    res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
