@@ -114,49 +114,58 @@ export const login: RequestHandler = async (req, res) => {
 
     if (result.rows.length === 0) {
       return res.status(401).json({ error: 'Nom d’utilisateur ou mot de passe incorrect.' });
-
     }
 
     const user = result.rows[0];
     const isMatch = await bcrypt.compare(password, user.password_hash);
+
     if (!isMatch) {
-  return res.status(401).json({ error: 'Nom d’utilisateur ou mot de passe incorrect.' });
-}
+      return res.status(401).json({ error: 'Nom d’utilisateur ou mot de passe incorrect.' });
+    }
 
-if (!user.is_verified) {
-  return res.status(403).json({ error: 'Compte inactif. Veuillez effectuer la vérification d’identité.' });
-}
-
+    if (!user.is_verified) {
+      return res.status(403).json({ error: 'Compte inactif. Veuillez effectuer la vérification d’identité.' });
+    }
 
     if (user.is_blacklisted) {
       return res.status(403).json({ error: 'Ce compte est sur liste noire.' });
     }
-    if (!user.is_otp_verified) {
-  const code = Math.floor(100000 + Math.random() * 900000).toString();
 
-  const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
-
-  await pool.query(
-    'INSERT INTO otps (user_id, code, created_at, expires_at) VALUES ($1, $2, NOW(), $3)',
-    [user.id, code, expiresAt]
-  );
-
-  // Optionnel : envoyer le code par email/SMS ici
-  console.log(`📩 Code OTP pour ${user.username}: ${code}`);
-}
     if (user.is_deceased) {
       return res.status(403).json({ error: 'Ce compte est marqué comme décédé.' });
     }
 
+    // ✅ Envoie un OTP si non encore validé
+    if (!user.is_otp_verified) {
+      const code = Math.floor(100000 + Math.random() * 900000).toString();
+      const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+      await pool.query(
+        'INSERT INTO otps (user_id, code, created_at, expires_at) VALUES ($1, $2, NOW(), $3)',
+        [user.id, code, expiresAt]
+      );
+
+      // Tu peux envoyer ici : await sendOTP(user.id, user.phone, user.email);
+      console.log(`📩 Code OTP pour ${user.username}: ${code}`);
+    }
+
+    // ✅ Inclure is_otp_verified dans le token
     const token = jwt.sign(
-      { id: user.id, email: user.email, role: user.role || 'user' },
+      {
+        id: user.id,
+        email: user.email,
+        role: user.role || 'user',
+        is_otp_verified: user.is_otp_verified || false, // ✅ essentiel
+      },
       process.env.JWT_SECRET || 'devsecretkey',
       { expiresIn: '1h' }
     );
 
-    res.status(200).json({
+    // ✅ Envoie requiresOTP au frontend
+    return res.status(200).json({
       message: 'Connexion réussie',
       token,
+      requiresOTP: !user.is_otp_verified, // ✅ frontend s'en sert pour rediriger
       user: {
         id: user.id,
         username: user.username,
@@ -164,17 +173,13 @@ if (!user.is_verified) {
         full_name: `${user.first_name} ${user.last_name}`,
         is_verified: user.is_verified || false,
         role: user.role || 'user',
-      }
+      },
     });
   } catch (error: any) {
     console.error('❌ Erreur dans login:', error.message);
-    console.error('🔎 Stack trace:', error.stack);
-     console.error('📄 Détail complet :', error);
-    
-    res.status(500).json({ error: 'Erreur serveur.' });
+    return res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
-
 // ➤ Récupération de profil
 export const getProfile = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
