@@ -7,6 +7,7 @@ import { v4 as uuidv4 } from 'uuid';
 import cloudinary from '../config/cloudinary';
 import { AuthRequest } from '../middlewares/authMiddleware'; // ou src/types
 import { File } from 'multer'; // ✅ ajoute ceci
+import requestIp from 'request-ip';
 
 
 
@@ -108,44 +109,60 @@ await sendSMS(
 export const login: RequestHandler = async (req, res) => {
   console.log('🟡 Requête login reçue avec :', req.body);
   const { username, password } = req.body;
+  const ip = requestIp.getClientIp(req);
 
   try {
     const result = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
 
     if (result.rows.length === 0) {
       return res.status(401).json({ error: 'Nom d’utilisateur ou mot de passe incorrect.' });
-
     }
 
     const user = result.rows[0];
     const isMatch = await bcrypt.compare(password, user.password_hash);
     if (!isMatch) {
-  return res.status(401).json({ error: 'Nom d’utilisateur ou mot de passe incorrect.' });
-}
+      return res.status(401).json({ error: 'Nom d’utilisateur ou mot de passe incorrect.' });
+    }
 
-if (!user.is_verified) {
-  return res.status(403).json({ error: 'Compte inactif. Veuillez effectuer la vérification d’identité.' });
-}
-
+    if (user.is_deceased) {
+      return res.status(403).json({ error: 'Ce compte est marqué comme décédé.' });
+    }
 
     if (user.is_blacklisted) {
       return res.status(403).json({ error: 'Ce compte est sur liste noire.' });
     }
-    if (!user.is_otp_verified) {
-  const code = Math.floor(100000 + Math.random() * 900000).toString();
 
-  const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+    if (!user.is_verified) {
+      return res.status(403).json({ error: 'Compte inactif. Veuillez effectuer la vérification d’identité.' });
+    }
 
-  await pool.query(
-    'INSERT INTO otps (user_id, code, created_at, expires_at) VALUES ($1, $2, NOW(), $3)',
-    [user.id, code, expiresAt]
-  );
+    // 🔍 Vérifie si l'IP a déjà été utilisée
+    const ipResult = await pool.query(
+      'SELECT * FROM login_history WHERE user_id = $1 AND ip_address = $2',
+      [user.id, ip]
+    );
 
-  // Optionnel : envoyer le code par email/SMS ici
-  console.log(`📩 Code OTP pour ${user.username}: ${code}`);
-}
-    if (user.is_deceased) {
-      return res.status(403).json({ error: 'Ce compte est marqué comme décédé.' });
+    const isNewIP = ipResult.rowCount === 0;
+
+    // ✅ Génère OTP seulement si IP nouvelle OU is_otp_verified = false
+    const requiresOTP = !user.is_otp_verified || isNewIP;
+
+    if (requiresOTP) {
+      const code = Math.floor(100000 + Math.random() * 900000).toString();
+      const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 min
+
+      await pool.query(
+        'INSERT INTO otps (user_id, code, created_at, expires_at) VALUES ($1, $2, NOW(), $3)',
+        [user.id, code, expiresAt]
+      );
+
+      console.log(`📩 Code OTP pour ${user.username} : ${code}`);
+    } else {
+      // ✅ Enregistre l'IP si déjà vérifié et connue
+      await pool.query(
+        'INSERT INTO login_history (user_id, ip_address) VALUES ($1, $2)',
+        [user.id, ip]
+      );
     }
 
     const token = jwt.sign(
@@ -154,30 +171,26 @@ if (!user.is_verified) {
       { expiresIn: '1h' }
     );
 
-  res.status(200).json({
-  message: 'Connexion réussie',
-  requiresOTP: !user.is_otp_verified,
-  token,
-  user: {
-    id: user.id,
-    username: user.username,
-    email: user.email,
-    full_name: `${user.first_name} ${user.last_name}`,
-    is_verified: user.is_verified || false,
-    role: user.role || 'user',
-  }
-});
-
+    res.status(200).json({
+      message: 'Connexion réussie',
+      requiresOTP,
+      token,
+      user: {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        full_name: `${user.first_name} ${user.last_name}`,
+        is_verified: user.is_verified || false,
+        role: user.role || 'user',
+      }
+    });
 
   } catch (error: any) {
     console.error('❌ Erreur dans login:', error.message);
     console.error('🔎 Stack trace:', error.stack);
-     console.error('📄 Détail complet :', error);
-    
     res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
-
 // ➤ Récupération de profil
 export const getProfile = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
