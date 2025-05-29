@@ -154,18 +154,21 @@ if (!user.is_verified) {
       { expiresIn: '1h' }
     );
 
-    res.status(200).json({
-      message: 'Connexion réussie',
-      token,
-      user: {
-        id: user.id,
-        username: user.username,
-        email: user.email,
-        full_name: `${user.first_name} ${user.last_name}`,
-        is_verified: user.is_verified || false,
-        role: user.role || 'user',
-      }
-    });
+  res.status(200).json({
+  message: 'Connexion réussie',
+  requiresOTP: !user.is_otp_verified,
+  token,
+  user: {
+    id: user.id,
+    username: user.username,
+    email: user.email,
+    full_name: `${user.first_name} ${user.last_name}`,
+    is_verified: user.is_verified || false,
+    role: user.role || 'user',
+  }
+});
+
+
   } catch (error: any) {
     console.error('❌ Erreur dans login:', error.message);
     console.error('🔎 Stack trace:', error.stack);
