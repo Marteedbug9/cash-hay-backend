@@ -492,33 +492,33 @@ export const verifyOTP: RequestHandler = async (req, res) => {
   }
 
   try {
+    // ✅ Récupérer uniquement les codes OTP NON EXPIRÉS
     const otpRes = await pool.query(
-      'SELECT code, expires_at FROM otps WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1',
+      `SELECT code, expires_at 
+       FROM otps 
+       WHERE user_id = $1 AND expires_at > NOW()
+       ORDER BY created_at DESC 
+       LIMIT 1`,
       [userId]
     );
 
     if (otpRes.rows.length === 0) {
-      return res.status(404).json({ valid: false, reason: 'Aucun code trouvé.' });
+      return res.status(404).json({ valid: false, reason: 'Aucun code valide trouvé (ou expiré).' });
     }
 
-    const { code: storedCode, expires_at } = otpRes.rows[0];
-    const now = new Date();
+    const { code: storedCode } = otpRes.rows[0];
 
-    if (now > new Date(expires_at)) {
-      return res.status(400).json({ valid: false, reason: 'Code expiré.' });
-    }
-
-    if (code !== storedCode) {
+    if (String(code).trim() !== String(storedCode).trim()) {
       return res.status(400).json({ valid: false, reason: 'Code invalide.' });
     }
 
-    // Supprimer tous les codes OTP de l'utilisateur
+    // ✅ Supprimer tous les codes OTP de l'utilisateur
     await pool.query('DELETE FROM otps WHERE user_id = $1', [userId]);
 
-    // Marquer comme vérifié
+    // ✅ Marquer l'utilisateur comme vérifié
     await pool.query('UPDATE users SET is_otp_verified = true WHERE id = $1', [userId]);
 
-    // Générer un nouveau token
+    // ✅ Récupérer l'utilisateur et générer un token
     const userRes = await pool.query('SELECT * FROM users WHERE id = $1', [userId]);
     const user = userRes.rows[0];
 
@@ -528,7 +528,7 @@ export const verifyOTP: RequestHandler = async (req, res) => {
       { expiresIn: '1h' }
     );
 
-    res.json({
+    return res.json({
       valid: true,
       token,
       user: {
@@ -538,10 +538,11 @@ export const verifyOTP: RequestHandler = async (req, res) => {
         full_name: `${user.first_name} ${user.last_name}`,
         is_verified: user.is_verified || false,
         role: user.role || 'user',
-      }
+      },
     });
   } catch (err) {
     console.error('Erreur vérification OTP :', err);
-    res.status(500).json({ error: 'Erreur serveur.' });
+    return res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
+
