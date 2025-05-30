@@ -498,15 +498,15 @@ export const verifyOTP: RequestHandler = async (req, res) => {
     );
 
     if (otpRes.rows.length === 0) {
-      return res.status(404).json({ valid: false, reason: 'No code found.' });
+      return res.status(404).json({ valid: false, reason: 'No OTP found for this user.' });
     }
 
-    const storedCode = otpRes.rows[0].code?.toString().trim();
+    const storedCode = String(otpRes.rows[0].code || '').trim();
     const expiresAt = new Date(otpRes.rows[0].expires_at);
     const now = new Date();
 
     // 🔍 Logs de debug
-    console.log('🧾 Code reçu     :', code);
+    console.log('🧾 Code reçu     :', String(code).trim());
     console.log('📦 Code stocké   :', storedCode);
     console.log('⏰ Date actuelle :', now.toISOString());
     console.log('🕑 Expiration    :', expiresAt.toISOString());
@@ -517,12 +517,12 @@ export const verifyOTP: RequestHandler = async (req, res) => {
       return res.status(400).json({ valid: false, reason: 'Expired code.' });
     }
 
-    if (code.toString().trim() !== storedCode) {
+    if (String(code).trim() !== storedCode) {
       console.log('❌ Code invalide');
       return res.status(400).json({ valid: false, reason: 'Invalid code.' });
     }
 
-    // ✅ Valide → supprimer l’OTP et marquer vérifié
+    // ✅ Code validé → supprimer l’OTP + mise à jour utilisateur
     await pool.query('DELETE FROM otps WHERE user_id = $1', [userId]);
     await pool.query('UPDATE users SET is_otp_verified = true WHERE id = $1', [userId]);
 
@@ -552,4 +552,5 @@ export const verifyOTP: RequestHandler = async (req, res) => {
     return res.status(500).json({ error: 'Server error.' });
   }
 };
+
 
