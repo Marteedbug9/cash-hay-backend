@@ -488,7 +488,7 @@ export const verifyOTP: RequestHandler = async (req, res) => {
   const { userId, code } = req.body;
 
   if (!userId || !code) {
-    return res.status(400).json({ error: 'ID utilisateur et code requis.' });
+    return res.status(400).json({ error: 'User ID and code are required.' });
   }
 
   try {
@@ -498,28 +498,31 @@ export const verifyOTP: RequestHandler = async (req, res) => {
     );
 
     if (otpRes.rows.length === 0) {
-      return res.status(404).json({ valid: false, reason: 'Aucun code trouvé.' });
+      return res.status(404).json({ valid: false, reason: 'No code found.' });
     }
 
-    const { code: storedCode, expires_at } = otpRes.rows[0];
+    const storedCode = otpRes.rows[0].code?.toString().trim();
+    const expiresAt = new Date(otpRes.rows[0].expires_at);
     const now = new Date();
 
-    // 🔍 Logs pour débogage
+    // 🔍 Logs de debug
     console.log('🧾 Code reçu     :', code);
     console.log('📦 Code stocké   :', storedCode);
-    console.log('⏰ Date actuelle :', now);
-    console.log('🕑 Expiration    :', new Date(expires_at));
+    console.log('⏰ Date actuelle :', now.toISOString());
+    console.log('🕑 Expiration    :', expiresAt.toISOString());
 
-    if (now > new Date(expires_at)) {
+    if (now > expiresAt) {
+      console.log('⛔ Code expiré');
       await pool.query('DELETE FROM otps WHERE user_id = $1', [userId]);
-      return res.status(400).json({ valid: false, reason: 'Code expiré.' });
+      return res.status(400).json({ valid: false, reason: 'Expired code.' });
     }
 
-    if (parseInt(code) !== parseInt(storedCode)) {
-      return res.status(400).json({ valid: false, reason: 'Code invalide.' });
+    if (code.toString().trim() !== storedCode) {
+      console.log('❌ Code invalide');
+      return res.status(400).json({ valid: false, reason: 'Invalid code.' });
     }
 
-    // ✅ Supprimer les OTP et mettre à jour le statut
+    // ✅ Valide → supprimer l’OTP et marquer vérifié
     await pool.query('DELETE FROM otps WHERE user_id = $1', [userId]);
     await pool.query('UPDATE users SET is_otp_verified = true WHERE id = $1', [userId]);
 
@@ -545,8 +548,8 @@ export const verifyOTP: RequestHandler = async (req, res) => {
       },
     });
   } catch (err) {
-    console.error('❌ Erreur vérification OTP :', err);
-    return res.status(500).json({ error: 'Erreur serveur.' });
+    console.error('❌ Server error during OTP verification:', err);
+    return res.status(500).json({ error: 'Server error.' });
   }
 };
 
