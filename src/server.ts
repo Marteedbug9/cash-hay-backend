@@ -5,6 +5,9 @@ import pool from './config/db'; // ✅ On importe le pool ici pour tester la con
 dotenv.config();
 
 import app from './app';
+import ipRoutes from './routes/ipRoutes';
+app.use('/api', ipRoutes);
+
 
 const PORT = process.env.PORT || 4000;
 

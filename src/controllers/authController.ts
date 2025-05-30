@@ -172,18 +172,20 @@ export const login: RequestHandler = async (req, res) => {
     );
 
     res.status(200).json({
-      message: 'Connexion réussie',
-      requiresOTP,
-      token,
-      user: {
-        id: user.id,
-        username: user.username,
-        email: user.email,
-        full_name: `${user.first_name} ${user.last_name}`,
-        is_verified: user.is_verified || false,
-        role: user.role || 'user',
-      }
-    });
+  message: 'Connexion réussie',
+  requiresOTP,
+  token,
+  user: {
+    id: user.id,
+    username: user.username,
+    email: user.email,
+    phone: user.phone, // facultatif
+    full_name: `${user.first_name} ${user.last_name}`,
+    is_verified: user.is_verified || false,
+    is_otp_verified: user.is_otp_verified || false, // 🔥 important
+    role: user.role || 'user',
+  }
+});
 
   } catch (error: any) {
     console.error('❌ Erreur dans login:', error.message);
