@@ -504,7 +504,7 @@ export const verifyOTP: RequestHandler = async (req, res) => {
     const { code: storedCode, expires_at } = otpRes.rows[0];
     const now = new Date();
 
-    // 🔍 Ajout de logs de debug
+    // 🔍 Logs pour débogage
     console.log('🧾 Code reçu     :', code);
     console.log('📦 Code stocké   :', storedCode);
     console.log('⏰ Date actuelle :', now);
@@ -515,12 +515,11 @@ export const verifyOTP: RequestHandler = async (req, res) => {
       return res.status(400).json({ valid: false, reason: 'Code expiré.' });
     }
 
-    // Comparaison stricte après nettoyage
-    if (String(code).trim() !== String(storedCode).trim()) {
-      console.log('❌ Code non identique après trim');
+    if (parseInt(code) !== parseInt(storedCode)) {
       return res.status(400).json({ valid: false, reason: 'Code invalide.' });
     }
 
+    // ✅ Supprimer les OTP et mettre à jour le statut
     await pool.query('DELETE FROM otps WHERE user_id = $1', [userId]);
     await pool.query('UPDATE users SET is_otp_verified = true WHERE id = $1', [userId]);
 
