@@ -146,12 +146,13 @@ export const login: RequestHandler = async (req, res) => {
 
     if (requiresOTP) {
       const code = Math.floor(100000 + Math.random() * 900000).toString();
-      const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 min
+      
 
       await pool.query(
-        'INSERT INTO otps (user_id, code, created_at, expires_at) VALUES ($1, $2, NOW(), $3)',
-        [user.id, code, expiresAt]
-      );
+    `INSERT INTO otps (user_id, code, created_at, expires_at)
+     VALUES ($1, $2, NOW(), NOW() + INTERVAL '10 minutes')`,
+    [user.id, code]
+  );
 
       console.log(`📩 Code OTP pour ${user.username} : ${code}`);
     } else {
