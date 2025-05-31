@@ -504,16 +504,17 @@ export const verifyOTP: RequestHandler = async (req, res) => {
     }
 
     const storedCode = String(otpRes.rows[0].code).trim();
-    const receivedCode = String(code).trim();
+    const cleanFrontendCode = String(code).trim();
 
-    console.log('🧾 Code reçu :', `"${receivedCode}"`);
-    console.log('📦 Code stocké :', `"${storedCode}"`);
-
-    if (storedCode !== receivedCode) {
+    if (cleanFrontendCode !== storedCode) {
       console.log('❌ Comparaison échouée');
       return res.status(400).json({
         valid: false,
         reason: 'Invalid code.',
+        debug: {
+          received: cleanFrontendCode,
+          stored: storedCode,
+        },
       });
     }
 
@@ -530,7 +531,7 @@ export const verifyOTP: RequestHandler = async (req, res) => {
       { expiresIn: '1h' }
     );
 
-    console.log('✅ Vérification OTP réussie');
+    console.log('✅ Vérification réussie, nouvel accès autorisé');
     return res.json({
       valid: true,
       token,
@@ -543,8 +544,9 @@ export const verifyOTP: RequestHandler = async (req, res) => {
         role: user.role || 'user',
       },
     });
+
   } catch (err) {
-    console.error('❌ Erreur serveur lors de la vérification OTP:', err);
+    console.error('❌ Server error during OTP verification:', err);
     return res.status(500).json({ error: 'Server error.' });
   }
 };
