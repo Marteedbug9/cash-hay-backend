@@ -498,31 +498,33 @@ export const verifyOTP: RequestHandler = async (req, res) => {
     );
 
     if (otpRes.rows.length === 0) {
-      return res.status(404).json({ valid: false, reason: 'No OTP found for this user.' });
+      return res.status(404).json({ valid: false, reason: 'No code found.' });
     }
 
-    const storedCode = String(otpRes.rows[0].code || '').trim();
+    const storedCode = otpRes.rows[0].code;
     const expiresAt = new Date(otpRes.rows[0].expires_at);
     const now = new Date();
 
-    // 🔍 Logs de debug
-    console.log('🧾 Code reçu     :', String(code).trim());
-    console.log('📦 Code stocké   :', storedCode);
-    console.log('⏰ Date actuelle :', now.toISOString());
-    console.log('🕑 Expiration    :', expiresAt.toISOString());
+    // 🔍 Debug complet
+    console.log('🔑 Code reçu    :', `"${code}"`);
+    console.log('📦 Code stocké  :', `"${storedCode}"`);
+    console.log('⏰ Date actuelle:', now.toISOString());
+    console.log('🕒 Expires at   :', expiresAt.toISOString());
 
+    // Expiré ?
     if (now > expiresAt) {
-      console.log('⛔ Code expiré');
       await pool.query('DELETE FROM otps WHERE user_id = $1', [userId]);
+      console.log('⛔ Code expiré');
       return res.status(400).json({ valid: false, reason: 'Expired code.' });
     }
 
-    if (String(code).trim() !== storedCode) {
+    // Comparaison directe sans parseInt (bug possible si code a des 0 devant)
+    if (code.trim() !== storedCode.trim()) {
       console.log('❌ Code invalide');
       return res.status(400).json({ valid: false, reason: 'Invalid code.' });
     }
 
-    // ✅ Code validé → supprimer l’OTP + mise à jour utilisateur
+    // ✅ Vérification réussie
     await pool.query('DELETE FROM otps WHERE user_id = $1', [userId]);
     await pool.query('UPDATE users SET is_otp_verified = true WHERE id = $1', [userId]);
 
@@ -548,7 +550,7 @@ export const verifyOTP: RequestHandler = async (req, res) => {
       },
     });
   } catch (err) {
-    console.error('❌ Server error during OTP verification:', err);
+    console.error('❌ Erreur serveur OTP:', err);
     return res.status(500).json({ error: 'Server error.' });
   }
 };
