@@ -132,10 +132,7 @@ export const login: RequestHandler = async (req, res) => {
       return res.status(403).json({ error: 'Ce compte est sur liste noire.' });
     }
 
-    if (!user.is_verified) {
-      return res.status(403).json({ error: 'Compte inactif. Veuillez effectuer la vérification d’identité.' });
-    }
-
+    
     // 🔍 Vérifie si l'IP a déjà été utilisée
     const ipResult = await pool.query(
       'SELECT * FROM login_history WHERE user_id = $1 AND ip_address = $2',
