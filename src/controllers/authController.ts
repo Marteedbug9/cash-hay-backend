@@ -491,25 +491,37 @@ export const verifyOTP: RequestHandler = async (req, res) => {
   }
 
   try {
+    // 🔍 Récupère le dernier OTP du user
     const otpRes = await pool.query(
-      `SELECT code FROM otps 
+      `SELECT code, expires_at FROM otps 
        WHERE user_id = $1 
-       AND NOW() < expires_at 
        ORDER BY created_at DESC 
        LIMIT 1`,
       [userId]
     );
 
     if (otpRes.rows.length === 0) {
-      console.log('⛔ Aucun code valide trouvé (expiré ou inexistant)');
+      console.log('⛔ Aucun code OTP trouvé pour cet utilisateur');
       return res.status(400).json({ valid: false, reason: 'Expired or invalid code.' });
     }
 
     const storedCode = String(otpRes.rows[0].code).trim();
     const cleanFrontendCode = String(code).trim();
+    const expiresAt = new Date(otpRes.rows[0].expires_at);
 
-    console.log('🧾 Code reçu :', cleanFrontendCode);
-    console.log('📦 Code attendu :', storedCode);
+    // 🕒 Récupère l'heure actuelle du serveur PostgreSQL
+    const timeRes = await pool.query('SELECT NOW()');
+    const serverNow = new Date(timeRes.rows[0].now);
+
+    console.log('🧾 Code reçu       :', cleanFrontendCode);
+    console.log('📦 Code attendu    :', storedCode);
+    console.log('⏰ Expires At      :', expiresAt.toISOString());
+    console.log('🕒 Heure serveur   :', serverNow.toISOString());
+
+    if (serverNow > expiresAt) {
+      console.log('⛔ Code expiré selon l’heure du serveur PostgreSQL');
+      return res.status(400).json({ valid: false, reason: 'Expired code.' });
+    }
 
     if (cleanFrontendCode !== storedCode) {
       console.log('❌ Code incorrect');
@@ -523,7 +535,7 @@ export const verifyOTP: RequestHandler = async (req, res) => {
       });
     }
 
-    // ✅ Supprimer le code après succès
+    // ✅ Supprime le code OTP et mets à jour le statut de vérification
     await pool.query('DELETE FROM otps WHERE user_id = $1', [userId]);
     await pool.query('UPDATE users SET is_otp_verified = true WHERE id = $1', [userId]);
 
@@ -549,6 +561,7 @@ export const verifyOTP: RequestHandler = async (req, res) => {
         role: user.role || 'user',
       },
     });
+
   } catch (err) {
     console.error('❌ Erreur serveur OTP :', err);
     return res.status(500).json({ error: 'Server error.' });
