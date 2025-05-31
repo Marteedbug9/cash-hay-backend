@@ -509,13 +509,17 @@ export const verifyOTP: RequestHandler = async (req, res) => {
       return res.status(400).json({ valid: false, reason: 'Code expiré.' });
     }
 
-    console.log('📥 Code reçu:', `"${code}"`);
-    console.log('📦 Code stocké:', `"${storedCode}"`);
+   const receivedCode = String(code).trim();
+const expectedCode = String(storedCode).trim();
 
-    if (String(code).trim() !== String(storedCode).trim()) {
-      console.log('❌ Code incorrect');
-      return res.status(400).json({ error: 'Code invalide.' });
-    }
+console.log(`📥 Code reçu: "${receivedCode}"`);
+console.log(`📦 Code attendu: "${expectedCode}"`);
+
+if (receivedCode !== expectedCode) {
+  console.log('❌ Code incorrect');
+  return res.status(400).json({ error: 'Code invalide.' });
+}
+
 
     // ✅ Marquer l’utilisateur comme vérifié
     await pool.query(
