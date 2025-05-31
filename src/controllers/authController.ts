@@ -482,6 +482,7 @@ export const confirmSuspiciousAttempt: RequestHandler = async (req, res) => {
 };
 
 // ➤ Vérification OTP après login
+
 export const verifyOTP: RequestHandler = async (req, res) => {
   const { userId, code } = req.body;
 
@@ -507,8 +508,11 @@ export const verifyOTP: RequestHandler = async (req, res) => {
     const storedCode = String(otpRes.rows[0].code).trim();
     const cleanFrontendCode = String(code).trim();
 
+    console.log('🧾 Code reçu :', cleanFrontendCode);
+    console.log('📦 Code attendu :', storedCode);
+
     if (cleanFrontendCode !== storedCode) {
-      console.log('❌ Comparaison échouée');
+      console.log('❌ Code incorrect');
       return res.status(400).json({
         valid: false,
         reason: 'Invalid code.',
@@ -519,7 +523,7 @@ export const verifyOTP: RequestHandler = async (req, res) => {
       });
     }
 
-    // ✅ Supprimer le code et valider l’utilisateur
+    // ✅ Supprimer le code après succès
     await pool.query('DELETE FROM otps WHERE user_id = $1', [userId]);
     await pool.query('UPDATE users SET is_otp_verified = true WHERE id = $1', [userId]);
 
@@ -532,7 +536,7 @@ export const verifyOTP: RequestHandler = async (req, res) => {
       { expiresIn: '1h' }
     );
 
-    console.log('✅ Vérification réussie, nouvel accès autorisé');
+    console.log('✅ OTP validé. Accès accordé à :', user.username);
     return res.json({
       valid: true,
       token,
@@ -545,9 +549,8 @@ export const verifyOTP: RequestHandler = async (req, res) => {
         role: user.role || 'user',
       },
     });
-
   } catch (err) {
-    console.error('❌ Server error during OTP verification:', err);
+    console.error('❌ Erreur serveur OTP :', err);
     return res.status(500).json({ error: 'Server error.' });
   }
 };
