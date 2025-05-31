@@ -490,43 +490,30 @@ export const verifyOTP: RequestHandler = async (req, res) => {
 
   try {
     const otpRes = await pool.query(
-      'SELECT code, expires_at FROM otps WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1',
+      `SELECT code FROM otps 
+       WHERE user_id = $1 
+       AND NOW() < expires_at 
+       ORDER BY created_at DESC 
+       LIMIT 1`,
       [userId]
     );
 
     if (otpRes.rows.length === 0) {
-      return res.status(404).json({ valid: false, reason: 'No code found.' });
+      console.log('⛔ Aucun code valide trouvé (expiré ou inexistant)');
+      return res.status(400).json({ valid: false, reason: 'Expired or invalid code.' });
     }
 
-    const storedCode = otpRes.rows[0].code;
-    const expiresAt = new Date(otpRes.rows[0].expires_at);
-    const now = new Date();
+    const storedCode = String(otpRes.rows[0].code).trim();
+    const receivedCode = String(code).trim();
 
-    // Nettoyage des valeurs
-    const cleanFrontendCode = String(code).trim();
-    const cleanStoredCode = String(storedCode).trim();
+    console.log('🧾 Code reçu :', `"${receivedCode}"`);
+    console.log('📦 Code stocké :', `"${storedCode}"`);
 
-    // 🔍 Debug log comparaison
-    console.log('🧾 Code reçu (frontend):', `"${cleanFrontendCode}"`, 'type:', typeof cleanFrontendCode);
-    console.log('📦 Code stocké (DB)   :', `"${cleanStoredCode}"`, 'type:', typeof cleanStoredCode);
-    console.log('⏰ Date actuelle      :', now.toISOString());
-    console.log('🕑 Expiration         :', expiresAt.toISOString());
-
-    if (now > expiresAt) {
-      console.log('⛔ Code expiré');
-      await pool.query('DELETE FROM otps WHERE user_id = $1', [userId]);
-      return res.status(400).json({ valid: false, reason: 'Expired code.' });
-    }
-
-    if (cleanFrontendCode !== cleanStoredCode) {
+    if (storedCode !== receivedCode) {
       console.log('❌ Comparaison échouée');
       return res.status(400).json({
         valid: false,
         reason: 'Invalid code.',
-        debug: {
-          received: cleanFrontendCode,
-          stored: cleanStoredCode,
-        },
       });
     }
 
@@ -543,7 +530,7 @@ export const verifyOTP: RequestHandler = async (req, res) => {
       { expiresIn: '1h' }
     );
 
-    console.log('✅ Vérification réussie, nouvel accès autorisé');
+    console.log('✅ Vérification OTP réussie');
     return res.json({
       valid: true,
       token,
@@ -557,7 +544,7 @@ export const verifyOTP: RequestHandler = async (req, res) => {
       },
     });
   } catch (err) {
-    console.error('❌ Server error during OTP verification:', err);
+    console.error('❌ Erreur serveur lors de la vérification OTP:', err);
     return res.status(500).json({ error: 'Server error.' });
   }
 };
