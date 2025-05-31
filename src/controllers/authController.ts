@@ -506,13 +506,11 @@ export const verifyOTP: RequestHandler = async (req, res) => {
     const now = new Date();
 
     // 🔍 Debug complet
-    console.log('🔑 Code reçu    :', `"${code}"`);
-    console.log('📦 Code stocké  :', `"${storedCode}"`);
-    console.log('⏰ Date actuelle:', now.toISOString());
-    console.log('🕒 Expires at   :', expiresAt.toISOString());
-
-    // Expiré ?
+    
+       // Expiré ?
     if (now > expiresAt) {
+       console.log('📦 Code stocké  :', `"${storedCode}"`);
+      console.log('⏰ Date actuelle:', now.toISOString());
       await pool.query('DELETE FROM otps WHERE user_id = $1', [userId]);
       console.log('⛔ Code expiré');
       return res.status(400).json({ valid: false, reason: 'Expired code.' });
@@ -521,6 +519,8 @@ export const verifyOTP: RequestHandler = async (req, res) => {
     // Comparaison directe sans parseInt (bug possible si code a des 0 devant)
     if (code.trim() !== storedCode.trim()) {
       console.log('❌ Code invalide');
+      console.log('🔑 Code reçu    :', `"${code}"`);
+      console.log('📦 Code stocké  :', `"${storedCode}"`);
       return res.status(400).json({ valid: false, reason: 'Invalid code.' });
     }
 
