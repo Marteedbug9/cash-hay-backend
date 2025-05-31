@@ -153,7 +153,7 @@ export const login: RequestHandler = async (req, res) => {
      VALUES ($1, $2, NOW(), NOW() + INTERVAL '10 minutes')`,
     [user.id, code]
   );
-
+      console.log('✅ OTP enregistré:', result.rowCount); // doit afficher 1
       console.log(`📩 Code OTP pour ${user.username} : ${code}`);
     } else {
       // ✅ Enregistre l'IP si déjà vérifié et connue
@@ -487,16 +487,12 @@ export const verifyOTP: RequestHandler = async (req, res) => {
   const { userId, code } = req.body;
 
   if (!userId || !code) {
-    return res.status(400).json({ error: 'User ID and code are required.' });
+    return res.status(400).json({ error: 'ID utilisateur et code requis.' });
   }
 
   try {
-    // 🔍 Récupère le dernier OTP du user
     const otpRes = await pool.query(
-      `SELECT code, expires_at FROM otps 
-       WHERE user_id = $1 
-       ORDER BY created_at DESC 
-       LIMIT 1`,
+      'SELECT code, expires_at FROM otps WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1',
       [userId]
     );
 
@@ -505,66 +501,56 @@ export const verifyOTP: RequestHandler = async (req, res) => {
       return res.status(400).json({ valid: false, reason: 'Expired or invalid code.' });
     }
 
-    const storedCode = String(otpRes.rows[0].code).trim();
-    const cleanFrontendCode = String(code).trim();
-    const expiresAt = new Date(otpRes.rows[0].expires_at);
+    const { code: storedCode, expires_at } = otpRes.rows[0];
+    const now = new Date();
 
-    // 🕒 Récupère l'heure actuelle du serveur PostgreSQL
-    const timeRes = await pool.query('SELECT NOW()');
-    const serverNow = new Date(timeRes.rows[0].now);
-
-    console.log('🧾 Code reçu       :', cleanFrontendCode);
-    console.log('📦 Code attendu    :', storedCode);
-    console.log('⏰ Expires At      :', expiresAt.toISOString());
-    console.log('🕒 Heure serveur   :', serverNow.toISOString());
-
-    if (serverNow > expiresAt) {
-      console.log('⛔ Code expiré selon l’heure du serveur PostgreSQL');
-      return res.status(400).json({ valid: false, reason: 'Expired code.' });
+    if (now > new Date(expires_at)) {
+      console.log('⏰ Code OTP expiré');
+      return res.status(400).json({ valid: false, reason: 'Code expiré.' });
     }
 
-    if (cleanFrontendCode !== storedCode) {
+    console.log('📥 Code reçu:', `"${code}"`);
+    console.log('📦 Code stocké:', `"${storedCode}"`);
+
+    if (String(code).trim() !== String(storedCode).trim()) {
       console.log('❌ Code incorrect');
-      return res.status(400).json({
-        valid: false,
-        reason: 'Invalid code.',
-        debug: {
-          received: cleanFrontendCode,
-          stored: storedCode,
-        },
-      });
+      return res.status(400).json({ error: 'Code invalide.' });
     }
 
-    // ✅ Supprime le code OTP et mets à jour le statut de vérification
-    await pool.query('DELETE FROM otps WHERE user_id = $1', [userId]);
-    await pool.query('UPDATE users SET is_otp_verified = true WHERE id = $1', [userId]);
+    // ✅ Marquer l’utilisateur comme vérifié
+    await pool.query(
+      'UPDATE users SET is_otp_verified = true WHERE id = $1',
+      [userId]
+    );
 
+    // ✅ Supprimer les OTP anciens
+    await pool.query('DELETE FROM otps WHERE user_id = $1', [userId]);
+
+    // 🔁 Regénérer le token
     const userRes = await pool.query('SELECT * FROM users WHERE id = $1', [userId]);
     const user = userRes.rows[0];
-
     const token = jwt.sign(
-      { id: user.id, email: user.email, role: user.role || 'user' },
+      { id: user.id, email: user.email, role: user.role },
       process.env.JWT_SECRET || 'devsecretkey',
       { expiresIn: '1h' }
     );
 
-    console.log('✅ OTP validé. Accès accordé à :', user.username);
-    return res.json({
-      valid: true,
+    return res.status(200).json({
       token,
       user: {
         id: user.id,
         username: user.username,
         email: user.email,
+        phone: user.phone,
         full_name: `${user.first_name} ${user.last_name}`,
-        is_verified: user.is_verified || false,
-        role: user.role || 'user',
+        is_verified: user.is_verified,
+        is_otp_verified: true,
+        role: user.role,
       },
     });
-
-  } catch (err) {
-    console.error('❌ Erreur serveur OTP :', err);
-    return res.status(500).json({ error: 'Server error.' });
+  } catch (err: any) {
+    console.error('❌ Erreur vérification OTP:', err.message);
+    return res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
 
