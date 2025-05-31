@@ -509,17 +509,16 @@ export const verifyOTP: RequestHandler = async (req, res) => {
       return res.status(400).json({ valid: false, reason: 'Code expiré.' });
     }
 
-   const receivedCode = String(code).trim();
-const expectedCode = String(storedCode).trim();
+    const receivedCode = String(code).trim();
+    const expectedCode = String(storedCode).trim();
 
-console.log(`📥 Code reçu: "${receivedCode}"`);
-console.log(`📦 Code attendu: "${expectedCode}"`);
+    console.log(`📥 Code reçu: "${receivedCode}" (longueur: ${receivedCode.length})`);
+    console.log(`📦 Code attendu: "${expectedCode}" (longueur: ${expectedCode.length})`);
 
-if (receivedCode !== expectedCode) {
-  console.log('❌ Code incorrect');
-  return res.status(400).json({ error: 'Code invalide.' });
-}
-
+    if (receivedCode !== expectedCode) {
+      console.log('❌ Code incorrect (comparaison échouée)');
+      return res.status(400).json({ error: 'Code invalide.' });
+    }
 
     // ✅ Marquer l’utilisateur comme vérifié
     await pool.query(
@@ -538,6 +537,8 @@ if (receivedCode !== expectedCode) {
       process.env.JWT_SECRET || 'devsecretkey',
       { expiresIn: '1h' }
     );
+
+    console.log('✅ Code OTP validé avec succès');
 
     return res.status(200).json({
       token,
