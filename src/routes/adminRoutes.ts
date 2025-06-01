@@ -52,4 +52,22 @@ router.patch('/users/:id/status', authenticateToken, verifyAdmin, async (req, re
   }
 });
 
+// ➤ Validation manuelle d'identité
+router.patch('/users/:id/identity/validate', authenticateToken, verifyAdmin, async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    await pool.query(
+      `UPDATE users 
+       SET identity_verified = true, verified_at = NOW()
+       WHERE id = $1`,
+      [id]
+    );
+    res.json({ message: 'Identité validée avec succès.' });
+  } catch (err) {
+    console.error('❌ Erreur validation identité:', err);
+    res.status(504).json({ error: 'Erreur lors de la validation de l’identité.' });
+  }
+});
+
 export default router;

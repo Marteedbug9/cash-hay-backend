@@ -181,6 +181,7 @@ export const login: RequestHandler = async (req, res) => {
     full_name: `${user.first_name} ${user.last_name}`,
     is_verified: user.is_verified || false,
     verified_at: user.verified_at || null, // ✅ ajoute ceci
+    identity_verified: user.identity_verified || false, // 👈 ici
     is_otp_verified: user.is_otp_verified || false, // 🔥 important
     role: user.role || 'user',
   }
@@ -567,3 +568,19 @@ export const verifyOTP: RequestHandler = async (req, res) => {
   }
 };
 
+// ➤ Vérification  validation ID
+export const validateIdentity = async (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  try {
+    await pool.query(
+      `UPDATE users SET identity_verified = true, verified_at = NOW() WHERE id = $1`,
+      [id]
+    );
+
+    return res.status(200).json({ message: 'Identité validée avec succès.' });
+  } catch (err) {
+    console.error('❌ Erreur validation identité:', err);
+    res.status(500).json({ error: 'Erreur lors de la validation.' });
+  }
+};
