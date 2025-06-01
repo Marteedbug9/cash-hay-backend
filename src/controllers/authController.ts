@@ -356,11 +356,15 @@ export const uploadIdentity = async (req: Request, res: Response) => {
       documentUrl
     });
 
-  } catch (error) {
+  }
+  
+  catch (error) {
     console.error('❌ Erreur upload identité:', error);
     res.status(500).json({ error: 'Erreur lors de l’envoi des fichiers.' });
   }
 };
+
+
 // ➤ Renvoyer un code OTP
 
 export const resendOTP: RequestHandler = async (req, res) => {
