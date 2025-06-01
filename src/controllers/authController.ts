@@ -180,6 +180,7 @@ export const login: RequestHandler = async (req, res) => {
     phone: user.phone, // facultatif
     full_name: `${user.first_name} ${user.last_name}`,
     is_verified: user.is_verified || false,
+    verified_at: user.verified_at || null, // ✅ ajoute ceci
     is_otp_verified: user.is_otp_verified || false, // 🔥 important
     role: user.role || 'user',
   }
@@ -337,6 +338,9 @@ export const uploadIdentity = async (req: Request, res: Response) => {
        WHERE id = $3`,
       [faceUrl, documentUrl, userId]
     );
+      console.log('📥 uploadIdentity appelé');
+console.log('👤 User ID:', userId);
+console.log('📁 Fichiers reçus:', req.files);
 
     await pool.query(
       `INSERT INTO audit_logs (user_id, action, details, ip_address, user_agent)
