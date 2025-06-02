@@ -301,9 +301,8 @@ export const uploadIdentity = async (req: Request, res: Response) => {
     const userAgent = req.headers['user-agent'];
 
     const files = req.files as {
-  [fieldname: string]: File[];
-};
-
+      [fieldname: string]: Express.Multer.File[];
+    };
 
     const faceFile = files?.face?.[0];
     const documentFile = files?.document?.[0];
@@ -312,6 +311,7 @@ export const uploadIdentity = async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Photos manquantes (visage ou pièce).' });
     }
 
+    // Fonction d'upload vers Cloudinary
     const uploadToCloudinary = (fileBuffer: Buffer, folder: string): Promise<string> => {
       return new Promise((resolve, reject) => {
         const stream = cloudinary.uploader.upload_stream(
@@ -330,19 +330,20 @@ export const uploadIdentity = async (req: Request, res: Response) => {
       uploadToCloudinary(documentFile.buffer, 'cash-hay/identities/document')
     ]);
 
+    // 🔒 Mise à jour utilisateur (attente d'approbation admin)
     await pool.query(
       `UPDATE users 
-       SET is_verified = true, 
-           verified_at = NOW(), 
-           face_url = $1, 
-           document_url = $2 
+       SET face_url = $1,
+           document_url = $2,
+           identity_verified = false,
+           is_verified = false,
+           verified_at = NULL,
+           identity_request_enabled = false
        WHERE id = $3`,
       [faceUrl, documentUrl, userId]
     );
-      console.log('📥 uploadIdentity appelé');
-console.log('👤 User ID:', userId);
-console.log('📁 Fichiers reçus:', req.files);
 
+    // 🧾 Journalisation
     await pool.query(
       `INSERT INTO audit_logs (user_id, action, details, ip_address, user_agent)
        VALUES ($1, $2, $3, $4, $5)`,
@@ -355,17 +356,17 @@ console.log('📁 Fichiers reçus:', req.files);
       ]
     );
 
+    console.log('📥 uploadIdentity exécuté avec succès pour', userId);
+
     return res.status(200).json({
-      message: 'Vérification complétée. Compte activé.',
+      message: 'Documents soumis avec succès. En attente de validation.',
       faceUrl,
       documentUrl
     });
 
-  }
-  
-  catch (error) {
+  } catch (error) {
     console.error('❌ Erreur upload identité:', error);
-    res.status(500).json({ error: 'Erreur lors de l’envoi des fichiers.' });
+    return res.status(500).json({ error: 'Erreur lors de l’envoi des fichiers.' });
   }
 };
 
@@ -550,18 +551,20 @@ export const verifyOTP: RequestHandler = async (req, res) => {
     console.log('✅ Code OTP validé avec succès');
 
     return res.status(200).json({
-      token,
-      user: {
-        id: user.id,
-        username: user.username,
-        email: user.email,
-        phone: user.phone,
-        full_name: `${user.first_name} ${user.last_name}`,
-        is_verified: user.is_verified,
-        is_otp_verified: true,
-        role: user.role,
-      },
-    });
+  token,
+  user: {
+    id: user.id,
+    username: user.username,
+    email: user.email,
+    phone: user.phone,
+    full_name: `${user.first_name} ${user.last_name}`,
+    is_verified: user.is_verified,
+    is_otp_verified: true,
+    identity_verified: user.identity_verified, // ✅ ajout important
+    role: user.role,
+  },
+});
+
   } catch (err: any) {
     console.error('❌ Erreur vérification OTP:', err.message);
     return res.status(500).json({ error: 'Erreur serveur.' });
