@@ -1,13 +1,25 @@
 // src/routes/transactionRoutes.ts
 import { Router } from 'express';
-import { getTransactions } from '../controllers/transactionController';
+import {
+  getTransactions,
+  createTransaction,
+  deposit,
+  withdraw
+} from '../controllers/transactionController';
 import { authenticateToken } from '../middlewares/authMiddleware';
 
 const router = Router();
+
+// ➤ Historique des transactions
 router.get('/', authenticateToken, getTransactions);
 
-// src/routes/transactionRoutes.ts
-import { createTransaction } from '../controllers/transactionController';
+// ➤ Création de transaction (manuelle ou transfert)
 router.post('/', authenticateToken, createTransaction);
+
+// ➤ Dépôt manuel
+router.post('/deposit', authenticateToken, deposit);
+
+// ➤ Retrait manuel
+router.post('/withdraw', authenticateToken, withdraw);
 
 export default router;

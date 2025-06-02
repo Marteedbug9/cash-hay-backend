@@ -140,3 +140,50 @@ export const deposit = async (req: Request, res: Response) => {
     res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
+
+export const withdraw = async (req: Request, res: Response) => {
+  const userId = (req as any).user?.id;
+  const { amount, currency = 'HTG', source = 'manual' } = req.body;
+
+  if (!amount || isNaN(amount) || amount <= 0) {
+    return res.status(400).json({ error: 'Montant invalide.' });
+  }
+
+  try {
+    const client = await pool.connect();
+    await client.query('BEGIN');
+
+    // Vérifie le solde avant de retirer
+    const balanceResult = await client.query(
+      `SELECT balance FROM balances WHERE user_id = $1`,
+      [userId]
+    );
+
+    const currentBalance = balanceResult.rows[0]?.balance || 0;
+    if (currentBalance < amount) {
+      client.release();
+      return res.status(400).json({ error: 'Fonds insuffisants.' });
+    }
+
+    // Mise à jour du solde
+    await client.query(
+      `UPDATE balances SET balance = balance - $1, updated_at = NOW() WHERE user_id = $2`,
+      [amount, userId]
+    );
+
+    // Insertion de la transaction
+    await client.query(
+      `INSERT INTO transactions (id, user_id, type, amount, currency, source, status, created_at)
+       VALUES ($1, $2, 'withdraw', $3, $4, $5, 'completed', NOW())`,
+      [uuidv4(), userId, amount, currency, source]
+    );
+
+    await client.query('COMMIT');
+    client.release();
+
+    res.status(200).json({ message: 'Retrait effectué avec succès.', amount });
+  } catch (error: any) {
+    console.error('❌ Erreur retrait :', error.message);
+    res.status(500).json({ error: 'Erreur serveur.' });
+  }
+};

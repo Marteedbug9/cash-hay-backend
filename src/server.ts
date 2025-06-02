@@ -1,17 +1,28 @@
-// src/server.ts
-import './config/db'; // ← Connexion à la DB
+import './config/db'; // Connexion à la DB
 import dotenv from 'dotenv';
-import pool from './config/db'; // ✅ On importe le pool ici pour tester la connexion
 dotenv.config();
 
-import app from './app';
+import express from 'express';
+import cors from 'cors';
+
+import authRoutes from './routes/authRoutes';
+import transactionRoutes from './routes/transactionRoutes';
 import ipRoutes from './routes/ipRoutes';
-app.use('/api', ipRoutes);
 
-
+const app = express();
 const PORT = process.env.PORT || 4000;
 
-// ✅ Tester la connexion à la base de données avant de démarrer le serveur
+// 🌍 Middlewares
+app.use(cors());
+app.use(express.json());
+
+// 🔐 Routes
+app.use('/api', ipRoutes); // Pour sécurité IP ou journalisation
+app.use('/api', authRoutes); // Authentification, identité, OTP
+app.use('/api/transactions', transactionRoutes); // Transactions, dépôts, retraits
+
+// ✅ Tester la connexion à la DB avant lancement
+import pool from './config/db';
 pool.query('SELECT NOW()')
   .then(() => {
     console.log('✅ Connexion PostgreSQL réussie');
@@ -21,5 +32,5 @@ pool.query('SELECT NOW()')
   })
   .catch(err => {
     console.error('❌ Échec connexion PostgreSQL:', err);
-    process.exit(1); // Arrête l'app si la connexion échoue
+    process.exit(1);
   });
