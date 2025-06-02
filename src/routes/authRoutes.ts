@@ -8,12 +8,16 @@ import {
   startRecovery,
   verifyEmailForRecovery,
   resetPassword,
-  confirmSuspiciousAttempt, verifyOTP, resendOTP 
+  confirmSuspiciousAttempt,
+  verifyOTP,
+  resendOTP,
+  getBalance,
+  transfer
 } from '../controllers/authController';
+import { deposit } from '../controllers/transactionController';
 
 import { authenticateToken } from '../middlewares/authMiddleware';
 import upload from '../middlewares/upload';
-
 
 const router = Router();
 
@@ -21,6 +25,11 @@ const router = Router();
 router.post('/register', register);
 router.post('/login', login);
 router.get('/profile', authenticateToken, getProfile);
+
+// ➤ Solde
+router.get('/balance', authenticateToken, getBalance);
+router.post('/deposit', authenticateToken, deposit);
+router.post('/transfer', authenticateToken, transfer);
 
 // ➤ Récupération compte (OTP)
 router.post('/recovery/start', startRecovery);
@@ -37,11 +46,10 @@ router.post(
   ]),
   uploadIdentity
 );
+
 // ➤ Vérification OTP
 router.post('/verify-otp', verifyOTP);
 router.post('/resend-otp', resendOTP);
-
-
 
 // ➤ Confirmation de tentative suspecte
 router.post('/confirm-suspicious-attempt', confirmSuspiciousAttempt);

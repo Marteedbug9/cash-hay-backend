@@ -31,7 +31,7 @@ export const register: RequestHandler = async (req, res) => {
     accept_terms
   } = req.body;
 
-   const usernameRegex = /^[a-zA-Z0-9@#%&._-]{3,30}$/;
+  const usernameRegex = /^[a-zA-Z0-9@#%&._-]{3,30}$/;
 
   if (!username || !usernameRegex.test(username)) {
     return res.status(400).json({
@@ -41,17 +41,17 @@ export const register: RequestHandler = async (req, res) => {
 
   // ✅ Vérification des champs requis
   if (!first_name || !last_name || !gender || !address || !city || !department || !country ||
-      !email || !phone ||
-      !birth_date || !birth_country || !birth_place ||
-      !id_type || !id_number || !id_issue_date || !id_expiry_date ||
-      !username || !password || accept_terms !== true) {
+    !email || !phone ||
+    !birth_date || !birth_country || !birth_place ||
+    !id_type || !id_number || !id_issue_date || !id_expiry_date ||
+    !username || !password || accept_terms !== true) {
     return res.status(400).json({ error: 'Tous les champs sont requis.' });
   }
 
   try {
     const userId = uuidv4();
     const hashedPassword = await bcrypt.hash(password, 10);
-    const recoveryCode = uuidv4(); // Code unique pour la récupération
+    const recoveryCode = uuidv4();
 
     const result = await pool.query(
       `INSERT INTO users (
@@ -76,22 +76,24 @@ export const register: RequestHandler = async (req, res) => {
       ]
     );
 
-     
+    // ✅ Création du solde initial à 0
+    await pool.query(
+      'INSERT INTO balances (user_id, amount) VALUES ($1, $2)',
+      [userId, 0]
+    );
 
-// Après insertion réussie du user :
+    // ✅ Envoi Email
+    await sendEmail({
+      to: email,
+      subject: 'Bienvenue sur Cash Hay',
+      text: `Bonjour ${first_name},\n\nBienvenue sur Cash Hay ! Votre compte a été créé avec succès. Veuillez compléter la vérification d'identité pour l'activation.\n\nL'équipe Cash Hay.`
+    });
 
- // ✅ Envoi Email
-await sendEmail({
-  to: email,
-  subject: 'Bienvenue sur Cash Hay',
-  text: `Bonjour ${first_name},\n\nBienvenue sur Cash Hay ! Votre compte a été créé avec succès. Veuillez compléter la vérification d'identité pour l'activation.\n\nL'équipe Cash Hay.`
-});
-
-// ✅ Envoi SMS
-await sendSMS(
-  phone,
-  `Bienvenue ${first_name} ! Votre compte Cash Hay est créé. Complétez votre vérification d'identité pour l'activer.`
-);
+    // ✅ Envoi SMS
+    await sendSMS(
+      phone,
+      `Bienvenue ${first_name} ! Votre compte Cash Hay est créé. Complétez votre vérification d'identité pour l'activer.`
+    );
 
     return res.status(201).json({ user: result.rows[0] });
 
@@ -105,6 +107,7 @@ await sendSMS(
     return res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
+
 
 
 // ➤ Connexion
@@ -149,13 +152,16 @@ export const login: RequestHandler = async (req, res) => {
     if (requiresOTP) {
       const code = Math.floor(100000 + Math.random() * 900000).toString();
       
+  await pool.query('DELETE FROM otps WHERE user_id = $1', [user.id]);
 
-      await pool.query(
-    `INSERT INTO otps (user_id, code, created_at, expires_at)
-     VALUES ($1, $2, NOW(), NOW() + INTERVAL '10 minutes')`,
-    [user.id, code]
-  );
-      console.log('✅ OTP enregistré:', result.rowCount); // doit afficher 1
+    
+  const otpInsert = await pool.query(
+  `INSERT INTO otps (user_id, code, created_at, expires_at)
+   VALUES ($1, $2, NOW(), NOW() + INTERVAL '10 minutes')`,
+  [user.id, code]
+    );
+    console.log('✅ OTP enregistré:', otpInsert.rowCount);
+
       console.log(`📩 Code OTP pour ${user.username} : ${code}`);
     } else {
       // ✅ Enregistre l'IP si déjà vérifié et connue
@@ -591,5 +597,101 @@ export const validateIdentity = async (req: Request, res: Response) => {
   } catch (err) {
     console.error('❌ Erreur validation identité:', err);
     res.status(500).json({ error: 'Erreur lors de la validation.' });
+  }
+};
+
+export const getBalance = async (req: AuthRequest, res: Response) => {
+  const userId = req.user?.id;
+
+  try {
+    const result = await pool.query(
+      'SELECT amount FROM balances WHERE user_id = $1',
+      [userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Solde non trouvé." });
+    }
+
+    res.json({ balance: parseFloat(result.rows[0].amount) });
+  } catch (err) {
+    console.error('❌ Erreur balance:', err);
+    res.status(500).json({ error: 'Erreur serveur.' });
+  }
+};
+
+
+export const updateBalance = async (userId: string, delta: number) => {
+  await pool.query(
+    `UPDATE balances 
+     SET amount = amount + $1, updated_at = CURRENT_TIMESTAMP
+     WHERE user_id = $2`,
+    [delta, userId]
+  );
+};
+
+export const transfer: RequestHandler = async (req: AuthRequest, res: Response) => {
+  const senderId = req.user?.id;
+  const { recipientUsername, amount } = req.body;
+
+  if (!recipientUsername || !amount || isNaN(amount) || amount <= 0) {
+    return res.status(400).json({ error: 'Données invalides.' });
+  }
+
+  try {
+    const client = await pool.connect();
+
+    try {
+      await client.query('BEGIN');
+
+      // Vérifie solde expéditeur
+      const senderBalanceRes = await client.query(
+        'SELECT amount FROM balances WHERE user_id = $1 FOR UPDATE',
+        [senderId]
+      );
+
+      const senderBalance = parseFloat(senderBalanceRes.rows[0]?.amount || 0);
+      if (senderBalance < amount) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'Fonds insuffisants.' });
+      }
+
+      // Trouve le destinataire
+      const recipientRes = await client.query(
+        'SELECT id FROM users WHERE username = $1',
+        [recipientUsername]
+      );
+      if (recipientRes.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Destinataire introuvable.' });
+      }
+      const recipientId = recipientRes.rows[0].id;
+
+      // Débit expéditeur
+      await client.query(
+        'UPDATE balances SET amount = amount - $1 WHERE user_id = $2',
+        [amount, senderId]
+      );
+
+      // Crédit destinataire
+      await client.query(
+        `UPDATE balances 
+         SET amount = amount + $1, updated_at = NOW()
+         WHERE user_id = $2`,
+        [amount, recipientId]
+      );
+
+      await client.query('COMMIT');
+
+      res.status(200).json({ message: 'Transfert effectué avec succès.' });
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.error('❌ Erreur transfer:', err);
+    res.status(500).json({ error: 'Erreur serveur lors du transfert.' });
   }
 };

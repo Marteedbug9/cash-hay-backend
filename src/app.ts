@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import authRoutes from './routes/authRoutes';
 import adminRoutes from './routes/adminRoutes'; // ✅ ajout des routes admin
+import transactionRoutes from './routes/transactionRoutes';
 
 const app = express();
 
@@ -25,4 +26,6 @@ app.get('/api', (req: express.Request, res: express.Response) => {
   res.status(200).json({ message: '✅ API Cash Hay opérationnelle' });
 });
 
+// ✅ Route de transaction
+app.use('/api/transactions', transactionRoutes);
 export default app;
