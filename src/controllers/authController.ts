@@ -6,8 +6,10 @@ import { sendEmail, sendSMS } from '../utils/notificationUtils';
 import { v4 as uuidv4 } from 'uuid';
 import cloudinary from '../config/cloudinary';
 import { AuthRequest } from '../middlewares/authMiddleware'; // ou src/types
-import { File } from 'multer'; // ✅ ajoute ceci
 import requestIp from 'request-ip';
+import { File } from 'multer'; // ✅ ajoute ceci
+
+
 
 
 
@@ -300,12 +302,16 @@ export const uploadIdentity = async (req: Request, res: Response) => {
     const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
     const userAgent = req.headers['user-agent'];
 
-    const files = req.files as {
-      [fieldname: string]: Express.Multer.File[];
-    };
+     const files = req.files as {
+     [fieldname: string]: File[];
+};
+
 
     const faceFile = files?.face?.[0];
     const documentFile = files?.document?.[0];
+
+
+
 
     if (!faceFile || !documentFile) {
       return res.status(400).json({ error: 'Photos manquantes (visage ou pièce).' });
