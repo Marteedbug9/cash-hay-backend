@@ -12,7 +12,7 @@ import {
   verifyOTP,
   resendOTP,
   getBalance,
-  transfer
+   transfer
 } from '../controllers/authController';
 import { deposit } from '../controllers/transactionController';
 

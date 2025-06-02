@@ -17,9 +17,9 @@ app.use(cors());
 app.use(express.json());
 
 // 🔐 Routes
-app.use('/api', ipRoutes); // Pour sécurité IP ou journalisation
-app.use('/api', authRoutes); // Authentification, identité, OTP
-app.use('/api/transactions', transactionRoutes); // Transactions, dépôts, retraits
+app.use('/api/ip', ipRoutes); // Exemple: journalisation d'adresse IP
+app.use('/api/auth', authRoutes); // ✅ Auth, identité, OTP → /api/auth/login
+app.use('/api/transactions', transactionRoutes); // ✅ Transactions → /api/transactions/
 
 // ✅ Tester la connexion à la DB avant lancement
 import pool from './config/db';
