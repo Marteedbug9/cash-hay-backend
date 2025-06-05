@@ -8,13 +8,8 @@ import cloudinary from '../config/cloudinary';
 import { AuthRequest } from '../middlewares/authMiddleware'; // ou src/types
 import requestIp from 'request-ip';
 import { File } from 'multer'; // ✅ ajoute ceci
-
-
-
-
-
-
-
+import db from '../config/db';
+import streamifier from 'streamifier';
 
 
 
@@ -557,7 +552,7 @@ export const verifyOTP: RequestHandler = async (req, res) => {
     const token = jwt.sign(
       { id: user.id, email: user.email, role: user.role },
       process.env.JWT_SECRET || 'devsecretkey',
-      { expiresIn: '1h' }
+      { expiresIn: '24h' }
     );
 
     console.log('✅ Code OTP validé avec succès');
@@ -572,7 +567,8 @@ export const verifyOTP: RequestHandler = async (req, res) => {
     full_name: `${user.first_name} ${user.last_name}`,
     is_verified: user.is_verified,
     is_otp_verified: true,
-    identity_verified: user.identity_verified, // ✅ ajout important
+    identity_verified: user.identity_verified,
+    identity_request_enabled: user.identity_request_enabled, 
     role: user.role,
   },
 });
@@ -693,5 +689,53 @@ export const transfer: RequestHandler = async (req: AuthRequest, res: Response) 
   } catch (err) {
     console.error('❌ Erreur transfer:', err);
     res.status(500).json({ error: 'Erreur serveur lors du transfert.' });
+  }
+};
+
+
+export const uploadProfileImage = async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    const file = req.file;
+
+    if (!file) {
+      return res.status(400).json({ error: 'Aucune image reçue' });
+    }
+
+    // Fonction promesse pour uploader avec stream
+    const uploadFromBuffer = (fileBuffer: Buffer): Promise<any> => {
+      return new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+          {
+            folder: 'cash-hay/profiles',
+            public_id: `profile_${userId}`,
+            resource_type: 'image',
+            format: 'jpg',
+          },
+          (error, result) => {
+            if (error) return reject(error);
+            resolve(result);
+          }
+        );
+
+        streamifier.createReadStream(fileBuffer).pipe(stream);
+      });
+    };
+
+    // ⏫ Upload de l'image
+    const result = await uploadFromBuffer(file.buffer);
+
+    // 📦 Mise à jour de la BDD
+    await db.query('UPDATE users SET profile_image = $1 WHERE id = $2', [
+      result.secure_url,
+      userId,
+    ]);
+
+    // ✅ Réponse finale
+    res.status(200).json({ imageUrl: result.secure_url });
+
+  } catch (err) {
+    console.error('❌ Erreur upload image :', err);
+    res.status(500).json({ error: 'Erreur serveur' });
   }
 };

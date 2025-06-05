@@ -8,6 +8,9 @@ import cors from 'cors';
 import authRoutes from './routes/authRoutes';
 import transactionRoutes from './routes/transactionRoutes';
 import ipRoutes from './routes/ipRoutes';
+import cardRoutes from './routes/cardRoutes';
+import adminRoutes from './routes/adminRoutes'; 
+
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -21,6 +24,8 @@ app.use('/api/ip', ipRoutes); // Exemple: journalisation d'adresse IP
 app.use('/api/auth', authRoutes); // ✅ Auth, identité, OTP → /api/auth/login
 app.use('/api/transactions', transactionRoutes); // ✅ Transactions → /api/transactions/
 
+app.use('/api/cards', cardRoutes); 
+app.use('/api/admin', adminRoutes);
 // ✅ Tester la connexion à la DB avant lancement
 import pool from './config/db';
 pool.query('SELECT NOW()')

@@ -12,12 +12,14 @@ import {
   verifyOTP,
   resendOTP,
   getBalance,
-   transfer
+  transfer,
+  uploadProfileImage 
 } from '../controllers/authController';
 import { deposit } from '../controllers/transactionController';
 
-import { authenticateToken } from '../middlewares/authMiddleware';
+import { authenticateToken, verifyAdmin  } from '../middlewares/authMiddleware';
 import upload from '../middlewares/upload';
+
 
 const router = Router();
 
@@ -53,5 +55,14 @@ router.post('/resend-otp', resendOTP);
 
 // ➤ Confirmation de tentative suspecte
 router.post('/confirm-suspicious-attempt', confirmSuspiciousAttempt);
+ 
+
+
+
+router.post('/upload-profile-image', authenticateToken, upload.single('image'), uploadProfileImage);
+
+
+
+
 
 export default router;
