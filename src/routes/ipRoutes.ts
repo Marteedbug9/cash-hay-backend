@@ -1,10 +1,10 @@
 // src/routes/ipRoutes.ts
-import { Router } from 'express';
+import { Router, Request, Response } from 'express';
 import axios from 'axios';
 
 const router = Router();
 
-router.get('/ip-info', async (req, res) => {
+router.get('/ip-info', async (req: Request, res: Response) => {
   const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '';
   const clientIP = Array.isArray(ip) ? ip[0] : ip?.split(',')[0] || '127.0.0.1';
 
