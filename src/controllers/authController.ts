@@ -13,7 +13,7 @@ import streamifier from 'streamifier';
 
 
 // ➤ Enregistrement
-export const register: RequestHandler = async (req, res) => {
+export const register = async (req: Request, res: Response) => {
   console.log('🟡 Données reçues:', req.body);
 
   const {
@@ -103,7 +103,7 @@ export const register: RequestHandler = async (req, res) => {
 };
 
 // ➤ Connexion
-export const login: RequestHandler = async (req, res) => {
+export const login = async (req: Request, res: Response) => {
   console.log('🟡 Requête login reçue avec :', req.body);
   const { username, password } = req.body;
   const ip = requestIp.getClientIp(req);
@@ -215,7 +215,7 @@ export const getProfile = async (req: Request, res: Response) => {
 };
 
 // ➤ Démarrer récupération de compte
-export const startRecovery: RequestHandler = async (req, res) => {
+export const startRecovery: RequestHandler = async (req: Request, res: Response)  => {
   const { credentialType, value } = req.body;
 
   try {
@@ -239,7 +239,7 @@ export const startRecovery: RequestHandler = async (req, res) => {
 };
 
 // ➤ Envoi OTP pour récupération
-export const verifyEmailForRecovery: RequestHandler = async (req, res) => {
+export const verifyEmailForRecovery: RequestHandler = async (req: Request, res: Response)  => {
   const { userId, verifiedEmail } = req.body;
 
   try {
@@ -269,7 +269,7 @@ export const verifyEmailForRecovery: RequestHandler = async (req, res) => {
 };
 
 // ➤ Réinitialisation mot de passe
-export const resetPassword: RequestHandler = async (req, res) => {
+export const resetPassword: RequestHandler = async (req: Request, res: Response)  => {
   const { userId, otp, newPassword } = req.body;
 
   try {
@@ -469,7 +469,7 @@ export const resendOTP: RequestHandler = async (req, res) => {
 };
 // ➤ Confirmation de sécurité (réponse Y ou N
 
-export const confirmSuspiciousAttempt: RequestHandler = async (req, res) => {
+export const confirmSuspiciousAttempt: RequestHandler = async (req: Request, res: Response) => {
   const { userId, response } = req.body;
 
   if (!userId || !['Y', 'N'].includes(response)) {
@@ -497,7 +497,7 @@ export const confirmSuspiciousAttempt: RequestHandler = async (req, res) => {
 
 // ➤ Vérification OTP après login
 
-export const verifyOTP: RequestHandler = async (req, res) => {
+export const verifyOTP: RequestHandler = async (req: Request, res: Response)  => {
   const { userId, code } = req.body;
 
   if (!userId || !code) {

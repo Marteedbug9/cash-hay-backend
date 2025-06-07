@@ -1,7 +1,7 @@
-import express from 'express';
+import express, { Request, Response } from 'express';
 import cors from 'cors';
 import authRoutes from './routes/authRoutes';
-import adminRoutes from './routes/adminRoutes'; // ✅ ajout des routes admin
+import adminRoutes from './routes/adminRoutes';
 import transactionRoutes from './routes/transactionRoutes';
 
 const app = express();
@@ -17,15 +17,16 @@ app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
 
 // ✅ Route de santé (monitoring)
-app.get('/healthz', (req, res)  => {
+app.get('/healthz', (req: Request, res: Response) => {
   res.status(200).json({ status: 'OK' });
 });
 
 // ✅ Répond à GET /api pour éviter l'erreur 404
-app.get('/api', (req, res) => {
+app.get('/api', (req: Request, res: Response) => {
   res.status(200).json({ message: '✅ API Cash Hay opérationnelle' });
 });
 
 // ✅ Route de transaction
 app.use('/api/transactions', transactionRoutes);
+
 export default app;
