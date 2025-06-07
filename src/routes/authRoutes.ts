@@ -13,32 +13,35 @@ import {
   resendOTP,
   getBalance,
   transfer,
-  uploadProfileImage 
+  uploadProfileImage,
+  searchUserByContact
 } from '../controllers/authController';
+
 import { deposit } from '../controllers/transactionController';
-
-import { authenticateToken, verifyAdmin  } from '../middlewares/authMiddleware';
+import { authenticateToken, verifyAdmin } from '../middlewares/authMiddleware';
 import upload from '../middlewares/upload';
-
 
 const router = Router();
 
-// ➤ Auth
+// ✅ Authentification
 router.post('/register', register);
 router.post('/login', login);
 router.get('/profile', authenticateToken, getProfile);
 
-// ➤ Solde
+// 🔍 Recherche d’utilisateur (email/téléphone)
+router.get('/search', authenticateToken, searchUserByContact);
+
+// 💰 Solde et transactions de base
 router.get('/balance', authenticateToken, getBalance);
 router.post('/deposit', authenticateToken, deposit);
 router.post('/transfer', authenticateToken, transfer);
 
-// ➤ Récupération compte (OTP)
+// 🔐 Récupération de compte / OTP
 router.post('/recovery/start', startRecovery);
 router.post('/recovery/verify-email', verifyEmailForRecovery);
 router.post('/recovery/reset', resetPassword);
 
-// ➤ Vérification identité avec photo & pièce (protégé par token)
+// 📤 Upload identité (photo + pièce)
 router.post(
   '/verify-identity',
   authenticateToken,
@@ -49,20 +52,14 @@ router.post(
   uploadIdentity
 );
 
-// ➤ Vérification OTP
+// 🔁 OTP après login
 router.post('/verify-otp', verifyOTP);
 router.post('/resend-otp', resendOTP);
 
-// ➤ Confirmation de tentative suspecte
+// ⚠️ Confirmation de tentative suspecte
 router.post('/confirm-suspicious-attempt', confirmSuspiciousAttempt);
- 
 
-
-
+// 👤 Photo de profil
 router.post('/upload-profile-image', authenticateToken, upload.single('image'), uploadProfileImage);
-
-
-
-
 
 export default router;

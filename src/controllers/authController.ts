@@ -5,12 +5,11 @@ import pool from '../config/db';
 import { sendEmail, sendSMS } from '../utils/notificationUtils';
 import { v4 as uuidv4 } from 'uuid';
 import cloudinary from '../config/cloudinary';
-import { AuthRequest } from '../middlewares/authMiddleware'; // ou src/types
 import requestIp from 'request-ip';
 import { File } from 'multer'; // ✅ ajoute ceci
 import db from '../config/db';
 import streamifier from 'streamifier';
-
+import { AuthRequest } from '../types/AuthRequest';
 
 
 // ➤ Enregistrement
@@ -596,103 +595,9 @@ export const validateIdentity = async (req: Request, res: Response) => {
   }
 };
 
-export const getBalance = async (req: AuthRequest, res: Response) => {
-  const userId = req.user?.id;
-
-  try {
-    const result = await pool.query(
-      'SELECT amount FROM balances WHERE user_id = $1',
-      [userId]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: "Solde non trouvé." });
-    }
-
-    res.json({ balance: parseFloat(result.rows[0].amount) });
-  } catch (err) {
-    console.error('❌ Erreur balance:', err);
-    res.status(500).json({ error: 'Erreur serveur.' });
-  }
-};
 
 
-export const updateBalance = async (userId: string, delta: number) => {
-  await pool.query(
-    `UPDATE balances 
-     SET amount = amount + $1, updated_at = CURRENT_TIMESTAMP
-     WHERE user_id = $2`,
-    [delta, userId]
-  );
-};
-
-export const transfer: RequestHandler = async (req: AuthRequest, res: Response) => {
-  const senderId = req.user?.id;
-  const { recipientUsername, amount } = req.body;
-
-  if (!recipientUsername || !amount || isNaN(amount) || amount <= 0) {
-    return res.status(400).json({ error: 'Données invalides.' });
-  }
-
-  try {
-    const client = await pool.connect();
-
-    try {
-      await client.query('BEGIN');
-
-      // Vérifie solde expéditeur
-      const senderBalanceRes = await client.query(
-        'SELECT amount FROM balances WHERE user_id = $1 FOR UPDATE',
-        [senderId]
-      );
-
-      const senderBalance = parseFloat(senderBalanceRes.rows[0]?.amount || 0);
-      if (senderBalance < amount) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({ error: 'Fonds insuffisants.' });
-      }
-
-      // Trouve le destinataire
-      const recipientRes = await client.query(
-        'SELECT id FROM users WHERE username = $1',
-        [recipientUsername]
-      );
-      if (recipientRes.rows.length === 0) {
-        await client.query('ROLLBACK');
-        return res.status(404).json({ error: 'Destinataire introuvable.' });
-      }
-      const recipientId = recipientRes.rows[0].id;
-
-      // Débit expéditeur
-      await client.query(
-        'UPDATE balances SET amount = amount - $1 WHERE user_id = $2',
-        [amount, senderId]
-      );
-
-      // Crédit destinataire
-      await client.query(
-        `UPDATE balances 
-         SET amount = amount + $1, updated_at = NOW()
-         WHERE user_id = $2`,
-        [amount, recipientId]
-      );
-
-      await client.query('COMMIT');
-
-      res.status(200).json({ message: 'Transfert effectué avec succès.' });
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
-  } catch (err) {
-    console.error('❌ Erreur transfer:', err);
-    res.status(500).json({ error: 'Erreur serveur lors du transfert.' });
-  }
-};
-
-
+// 📤 Upload photo de profil
 export const uploadProfileImage = async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user?.id;
@@ -702,7 +607,6 @@ export const uploadProfileImage = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: 'Aucune image reçue' });
     }
 
-    // Fonction promesse pour uploader avec stream
     const uploadFromBuffer = (fileBuffer: Buffer): Promise<any> => {
       return new Promise((resolve, reject) => {
         const stream = cloudinary.uploader.upload_stream(
@@ -717,25 +621,44 @@ export const uploadProfileImage = async (req: AuthRequest, res: Response) => {
             resolve(result);
           }
         );
-
         streamifier.createReadStream(fileBuffer).pipe(stream);
       });
     };
 
-    // ⏫ Upload de l'image
     const result = await uploadFromBuffer(file.buffer);
 
-    // 📦 Mise à jour de la BDD
-    await db.query('UPDATE users SET profile_image = $1 WHERE id = $2', [
+    await pool.query('UPDATE users SET profile_image = $1 WHERE id = $2', [
       result.secure_url,
       userId,
     ]);
 
-    // ✅ Réponse finale
     res.status(200).json({ imageUrl: result.secure_url });
-
   } catch (err) {
     console.error('❌ Erreur upload image :', err);
     res.status(500).json({ error: 'Erreur serveur' });
+  }
+};
+
+// 🔍 Recherche d'utilisateur par email ou téléphone
+export const searchUserByContact = async (req: AuthRequest, res: Response) => {
+  const contact = req.query.contact as string;
+  if (!contact) {
+    return res.status(400).json({ error: 'Contact manquant ou invalide' });
+  }
+
+  try {
+    const { rows } = await pool.query(
+      'SELECT id, full_name, profile_image AS photo_url FROM users WHERE email = $1 OR phone = $1',
+      [contact]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ exists: false });
+    }
+
+    return res.json({ exists: true, user: rows[0] });
+  } catch (err) {
+    console.error('❌ Erreur recherche utilisateur :', err);
+    return res.status(500).json({ error: 'Erreur serveur' });
   }
 };

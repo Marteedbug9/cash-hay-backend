@@ -1,22 +1,19 @@
 // src/types/index.d.ts
-import { Request } from 'express';
 import type { File as MulterFile } from 'multer';
 
 declare global {
   namespace Express {
-    interface UserPayload {
+    interface User {
       id: string;
       email?: string;
       role?: 'admin' | 'user';
-      is_otp_verified?: boolean; // ✅ Ajout ici
+      is_otp_verified?: boolean;
     }
 
     interface Request {
-      user?: UserPayload;
-      files?: {
-        face?: MulterFile[];
-        document?: MulterFile[];
-      };
+      user?: User;
+      file?: MulterFile; // Pour .single()
+      files?: { [fieldname: string]: MulterFile[] }; // Pour .fields()
     }
   }
 }
