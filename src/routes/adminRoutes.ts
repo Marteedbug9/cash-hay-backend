@@ -1,11 +1,12 @@
 import { Router } from 'express';
-import { authenticateToken, verifyAdmin } from '../middlewares/authMiddleware';
 import pool from '../config/db';
+import { verifyToken,verifyAdmin } from '../middlewares/verifyToken';
+
 
 const router = Router();
 
 // ➤ Voir tous les utilisateurs
-router.get('/users', authenticateToken, verifyAdmin, async (req, res) => {
+router.get('/users', verifyToken, verifyAdmin, async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT
@@ -21,7 +22,7 @@ router.get('/users', authenticateToken, verifyAdmin, async (req, res) => {
 });
 
 // ➤ Activer / désactiver un compte
-router.patch('/users/:id/verify', authenticateToken, verifyAdmin, async (req, res) => {
+router.patch('/users/:id/verify', verifyToken, verifyAdmin, async (req, res) => {
   const { id } = req.params;
   const { is_verified } = req.body;
 
@@ -37,7 +38,7 @@ router.patch('/users/:id/verify', authenticateToken, verifyAdmin, async (req, re
 });
 
 // ➤ Liste noire / Décès
-router.patch('/users/:id/status', authenticateToken, verifyAdmin, async (req, res) => {
+router.patch('/users/:id/status', verifyToken, verifyAdmin, async (req, res) => {
   const { id } = req.params;
   const { is_blacklisted, is_deceased } = req.body;
 
@@ -55,7 +56,7 @@ router.patch('/users/:id/status', authenticateToken, verifyAdmin, async (req, re
 
 
 // ✅ Validation manuelle d'identité
-router.patch('/users/:id/identity/validate', authenticateToken, verifyAdmin, async (req, res) => {
+router.patch('/users/:id/identity/validate', verifyToken, verifyAdmin, async (req, res) => {
   const { id } = req.params;
 
   try {
@@ -94,7 +95,7 @@ router.patch('/users/:id/identity/validate', authenticateToken, verifyAdmin, asy
 
 
 // ➤ Réactivation soumission identité
-router.patch('/users/:id/identity/request-enable', authenticateToken, verifyAdmin, async (req, res) => {
+router.patch('/users/:id/identity/request-enable', verifyToken, verifyAdmin, async (req, res) => {
   const { id } = req.params;
 
   try {
@@ -129,7 +130,7 @@ router.patch('/users/:id/identity/request-enable', authenticateToken, verifyAdmi
 });
 
 // ➤ Réactiver l'envoi d'identité (admin)
-router.patch('/users/:id/identity/reactivate', authenticateToken, verifyAdmin, async (req, res) => {
+router.patch('/users/:id/identity/reactivate', verifyToken, verifyAdmin, async (req, res) => {
   const { id } = req.params;
 
   try {
@@ -145,7 +146,7 @@ router.patch('/users/:id/identity/reactivate', authenticateToken, verifyAdmin, a
 });
 
 // ➤ Détails d’un utilisateur sans mot de passe ni documents
-router.get('/users/:id', authenticateToken, verifyAdmin, async (req, res) => {
+router.get('/users/:id', verifyToken, verifyAdmin, async (req, res) => {
   const { id } = req.params;
 
   try {

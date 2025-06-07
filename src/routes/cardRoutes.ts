@@ -5,12 +5,12 @@ import {
   cancelCard,
   toggleCardLock,
 } from '../controllers/cardController';
-import { authenticateToken } from '../middlewares/authMiddleware';
+import { verifyToken } from '../middlewares/verifyToken';
 
 const router = Router();
 
-router.post('/request', authenticateToken, requestCard);
-router.post('/cancel', authenticateToken, cancelCard);
-router.post('/toggle-lock', authenticateToken, toggleCardLock);
+router.post('/request', verifyToken, requestCard);
+router.post('/cancel', verifyToken, cancelCard);
+router.post('/toggle-lock', verifyToken, toggleCardLock);
 
 export default router;

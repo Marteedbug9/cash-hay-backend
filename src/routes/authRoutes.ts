@@ -1,4 +1,3 @@
-// src/routes/authRoutes.ts
 import { Router } from 'express';
 import {
   login,
@@ -11,40 +10,31 @@ import {
   confirmSuspiciousAttempt,
   verifyOTP,
   resendOTP,
-  getBalance,
-  transfer,
   uploadProfileImage,
   searchUserByContact
 } from '../controllers/authController';
-
-import { deposit } from '../controllers/transactionController';
-import { authenticateToken, verifyAdmin } from '../middlewares/authMiddleware';
 import upload from '../middlewares/upload';
+import { verifyToken } from '../middlewares/verifyToken';
 
 const router = Router();
 
-// ✅ Authentification
+// Authentification
 router.post('/register', register);
 router.post('/login', login);
-router.get('/profile', authenticateToken, getProfile);
+router.get('/profile', verifyToken, getProfile);
 
-// 🔍 Recherche d’utilisateur (email/téléphone)
-router.get('/search', authenticateToken, searchUserByContact);
+// Recherche utilisateur
+router.get('/search', verifyToken, searchUserByContact);
 
-// 💰 Solde et transactions de base
-router.get('/balance', authenticateToken, getBalance);
-router.post('/deposit', authenticateToken, deposit);
-router.post('/transfer', authenticateToken, transfer);
-
-// 🔐 Récupération de compte / OTP
+// Récupération de compte / OTP
 router.post('/recovery/start', startRecovery);
 router.post('/recovery/verify-email', verifyEmailForRecovery);
 router.post('/recovery/reset', resetPassword);
 
-// 📤 Upload identité (photo + pièce)
+// Upload identité
 router.post(
   '/verify-identity',
-  authenticateToken,
+  verifyToken,
   upload.fields([
     { name: 'face', maxCount: 1 },
     { name: 'document', maxCount: 1 }
@@ -52,14 +42,14 @@ router.post(
   uploadIdentity
 );
 
-// 🔁 OTP après login
+// OTP après login
 router.post('/verify-otp', verifyOTP);
 router.post('/resend-otp', resendOTP);
 
-// ⚠️ Confirmation de tentative suspecte
+// Confirmation tentative suspecte
 router.post('/confirm-suspicious-attempt', confirmSuspiciousAttempt);
 
-// 👤 Photo de profil
-router.post('/upload-profile-image', authenticateToken, upload.single('image'), uploadProfileImage);
+// Photo de profil
+router.post('/upload-profile-image', verifyToken, upload.single('image'), uploadProfileImage);
 
 export default router;

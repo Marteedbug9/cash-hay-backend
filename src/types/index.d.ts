@@ -3,7 +3,7 @@ import type { File as MulterFile } from 'multer';
 
 declare global {
   namespace Express {
-    interface User {
+    interface UserPayload {
       id: string;
       email?: string;
       role?: 'admin' | 'user';
@@ -11,9 +11,9 @@ declare global {
     }
 
     interface Request {
-      user?: User;
-      file?: MulterFile; // Pour .single()
-      files?: { [fieldname: string]: MulterFile[] }; // Pour .fields()
+      user?: UserPayload;
+      file?: MulterFile;
+      files?: { [fieldname: string]: MulterFile[] };
     }
   }
 }

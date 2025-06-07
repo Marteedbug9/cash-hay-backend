@@ -17,12 +17,12 @@ app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
 
 // ✅ Route de santé (monitoring)
-app.get('/healthz', (req: express.Request, res: express.Response) => {
+app.get('/healthz', (req, res)  => {
   res.status(200).json({ status: 'OK' });
 });
 
 // ✅ Répond à GET /api pour éviter l'erreur 404
-app.get('/api', (req: express.Request, res: express.Response) => {
+app.get('/api', (req, res) => {
   res.status(200).json({ message: '✅ API Cash Hay opérationnelle' });
 });
 

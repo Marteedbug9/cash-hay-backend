@@ -9,7 +9,7 @@ import requestIp from 'request-ip';
 import { File } from 'multer'; // ✅ ajoute ceci
 import db from '../config/db';
 import streamifier from 'streamifier';
-import { AuthRequest } from '../types/AuthRequest';
+
 
 
 // ➤ Enregistrement
@@ -101,8 +101,6 @@ export const register: RequestHandler = async (req, res) => {
     return res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
-
-
 
 // ➤ Connexion
 export const login: RequestHandler = async (req, res) => {
@@ -196,7 +194,7 @@ export const login: RequestHandler = async (req, res) => {
   }
 };
 // ➤ Récupération de profil
-export const getProfile = async (req: AuthRequest, res: Response) => {
+export const getProfile = async (req: Request, res: Response) => {
   const userId = req.user?.id;
 
   try {
@@ -598,7 +596,7 @@ export const validateIdentity = async (req: Request, res: Response) => {
 
 
 // 📤 Upload photo de profil
-export const uploadProfileImage = async (req: AuthRequest, res: Response) => {
+export const uploadProfileImage = async (req: Request, res: Response) => {
   try {
     const userId = req.user?.id;
     const file = req.file;
@@ -640,7 +638,7 @@ export const uploadProfileImage = async (req: AuthRequest, res: Response) => {
 };
 
 // 🔍 Recherche d'utilisateur par email ou téléphone
-export const searchUserByContact = async (req: AuthRequest, res: Response) => {
+export const searchUserByContact = async (req: Request, res: Response) => {
   const contact = req.query.contact as string;
   if (!contact) {
     return res.status(400).json({ error: 'Contact manquant ou invalide' });

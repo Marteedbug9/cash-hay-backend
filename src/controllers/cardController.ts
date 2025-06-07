@@ -1,9 +1,8 @@
 import { Request, Response } from 'express';
-import { AuthRequest } from '../middlewares/authMiddleware';
 import pool from '../config/db';
 
 // 🟢 Demande de carte gratuite, paiement après 48h
-export const requestCard = async (req: AuthRequest, res: Response) => {
+export const requestCard = async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
     const userId = req.user?.id;
@@ -36,7 +35,7 @@ export const requestCard = async (req: AuthRequest, res: Response) => {
 };
 
 // 🔒 Verrouiller/déverrouiller la carte
-export const toggleCardLock = async (req: AuthRequest, res: Response) => {
+export const toggleCardLock = async (req: Request, res: Response) => {
   const userId = req.user?.id;
   const { is_locked } = req.body;
 
@@ -45,7 +44,7 @@ export const toggleCardLock = async (req: AuthRequest, res: Response) => {
 };
 
 // ❌ Annuler la carte
-export const cancelCard = async (req: AuthRequest, res: Response) => {
+export const cancelCard = async (req: Request, res: Response) => {
   const userId = req.user?.id;
 
   await pool.query('DELETE FROM cards WHERE user_id = $1', [userId]);

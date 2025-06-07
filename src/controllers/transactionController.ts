@@ -1,12 +1,10 @@
 // src/controllers/transactionController.ts
 import { Request, Response } from 'express';
-import { AuthenticatedRequest } from '../types/AuthenticatedRequest'; // ✅
-
 import pool from '../config/db';
 import { v4 as uuidv4 } from 'uuid';
 
 
-export const getTransactions = async (req: AuthenticatedRequest, res: Response) => {
+export const getTransactions = async (req: Request, res: Response) => {
   const userId = req.user?.id;
 
   try {
@@ -23,7 +21,7 @@ export const getTransactions = async (req: AuthenticatedRequest, res: Response) 
   }
 };
 
-export const createTransaction = async (req: AuthenticatedRequest, res: Response) => {
+export const createTransaction = async (req: Request, res: Response) => {
   const userId = req.user?.id;
   const {
     type, // 'deposit', 'transfer', 'receive'
@@ -104,7 +102,7 @@ export const createTransaction = async (req: AuthenticatedRequest, res: Response
   }
 };
 
-export const deposit = async (req: AuthenticatedRequest, res: Response) => {
+export const deposit = async (req: Request, res: Response) => {
   const userId = req.user?.id;
   const { amount, source = 'manual', currency = 'HTG' } = req.body;
 
@@ -139,7 +137,7 @@ export const deposit = async (req: AuthenticatedRequest, res: Response) => {
   }
 };
 
-export const withdraw = async (req: AuthenticatedRequest, res: Response) => {
+export const withdraw = async (req: Request, res: Response) => {
   const userId = req.user?.id;
   const { amount, currency = 'HTG', source = 'manual' } = req.body;
 
@@ -186,7 +184,7 @@ export const withdraw = async (req: AuthenticatedRequest, res: Response) => {
   }
 };
 
-export const transfer = async (req: AuthenticatedRequest, res: Response) => {
+export const transfer = async (req: Request, res: Response)=> {
   const senderId = req.user?.id;
   const { recipientUsername, amount } = req.body;
   const transferFee = 0.57;
@@ -274,7 +272,7 @@ export const transfer = async (req: AuthenticatedRequest, res: Response) => {
   }
 };
 
-export const getBalance = async (req: AuthenticatedRequest, res: Response) => {
+export const getBalance = async (req: Request, res: Response) => {
   const userId = req.user?.id;
 
   try {

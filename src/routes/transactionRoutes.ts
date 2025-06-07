@@ -4,22 +4,29 @@ import {
   getTransactions,
   createTransaction,
   deposit,
-  withdraw
+  withdraw,
+  transfer,
+  getBalance,
+  updateBalance
 } from '../controllers/transactionController';
-import { authenticateToken } from '../middlewares/authMiddleware';
+import { verifyToken } from '../middlewares/verifyToken';
+
 
 const router = Router();
 
 // ➤ Historique des transactions
-router.get('/', authenticateToken, getTransactions);
+router.get('/', verifyToken, getTransactions);
 
 // ➤ Création de transaction (manuelle ou transfert)
-router.post('/', authenticateToken, createTransaction);
+router.post('/', verifyToken, createTransaction);
 
 // ➤ Dépôt manuel
-router.post('/deposit', authenticateToken, deposit);
+router.post('/deposit', verifyToken, deposit);
 
 // ➤ Retrait manuel
-router.post('/withdraw', authenticateToken, withdraw);
+router.post('/withdraw', verifyToken, withdraw);
 
+router.post('/transfer', verifyToken, transfer);
+
+router.get('/balance', verifyToken, getBalance);
 export default router;
