@@ -11,34 +11,43 @@ import {
   acceptRequest,
   cancelRequest,
   getRequests,
-  updateBalance
+  // updateBalance // 🔧 Si tu veux l'utiliser, décommente et ajoute la route en bas
 } from '../controllers/transactionController';
 import { verifyToken } from '../middlewares/verifyToken';
 
-
 const router = Router();
 
-// ➤ Historique des transactions
+// 💰 Solde actuel
+router.get('/balance', verifyToken, getBalance);
+
+// 📜 Historique des transactions
 router.get('/', verifyToken, getTransactions);
 
-// ➤ Création de transaction (manuelle ou transfert)
-router.post('/', verifyToken, createTransaction);
-
-// ➤ Dépôt manuel
+// ➕ Dépôt
 router.post('/deposit', verifyToken, deposit);
 
-// ➤ Retrait manuel
+// ➖ Retrait
 router.post('/withdraw', verifyToken, withdraw);
 
+// 🔁 Transfert entre utilisateurs
 router.post('/transfer', verifyToken, transfer);
 
+// 📝 Création manuelle d'une transaction
+router.post('/', verifyToken, createTransaction);
+
+// 📥 Demander de l’argent
 router.post('/request', verifyToken, requestMoney);
 
+// ✅ Accepter une demande
 router.post('/accept-request', verifyToken, acceptRequest);
 
+// ❌ Refuser ou annuler une demande
 router.post('/cancel-request', verifyToken, cancelRequest);
 
+// 📋 Liste des demandes
 router.get('/requests', verifyToken, getRequests);
 
-router.get('/balance', verifyToken, getBalance);
+// 🔧 Route manquante ?
+// router.post('/update-balance', verifyToken, updateBalance);
+
 export default router;

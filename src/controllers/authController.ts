@@ -1,5 +1,6 @@
 import { RequestHandler, Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
+import { generateOTP } from '../utils/otpUtils';
 import bcrypt from 'bcrypt';
 import pool from '../config/db';
 import { sendEmail, sendSMS } from '../utils/notificationUtils';
@@ -659,6 +660,126 @@ export const searchUserByContact = async (req: Request, res: Response) => {
     return res.status(200).json({ users: rows });
   } catch (err) {
     console.error('❌ Erreur batch contacts :', err);
+    return res.status(500).json({ error: 'Erreur serveur' });
+  }
+};
+
+export const sendOTPRegister = async (req: Request, res: Response) => {
+  const { contact } = req.body;
+  if (!contact) return res.status(400).json({ error: 'Contact requis' });
+
+  const isEmail = contact.includes('@');
+  const otp = generateOTP();
+  const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+
+  try {
+    // Recherche utilisateur existant par email ou téléphone
+    const existingUserRes = await pool.query(
+      `SELECT * FROM users WHERE ${isEmail ? 'email' : 'phone'} = $1`,
+      [contact]
+    );
+
+    const userInfo = existingUserRes;
+    const existingId = userInfo.rows[0]?.id;
+
+    // Enregistrement OTP
+    await pool.query(
+      `INSERT INTO otps (user_id, contact, code, expires_at)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (contact) DO UPDATE 
+       SET code = EXCLUDED.code, expires_at = EXCLUDED.expires_at`,
+      [existingId || null, contact, otp, expiresAt]
+    );
+
+    // Envoi OTP
+    if (isEmail) {
+      await sendEmail({
+        to: contact,
+        subject: 'Votre code OTP Cash Hay',
+        text: `Votre code est : ${otp}`
+      });
+
+      if (userInfo.rowCount && userInfo.rows[0].email !== contact) {
+        await sendEmail({
+          to: userInfo.rows[0].email,
+          subject: 'Alerte de tentative d’enregistrement',
+          text: `Une tentative d’inscription a été faite avec votre email. Répondez Y pour autoriser ou N pour signaler une fraude.`
+        });
+      }
+    } else {
+      await sendSMS(contact, `Votre code OTP Cash Hay est : ${otp}`);
+
+      if (userInfo.rowCount && userInfo.rows[0].email) {
+        await sendEmail({
+          to: userInfo.rows[0].email,
+          subject: 'Alerte de tentative d’enregistrement',
+          text: `Une tentative d’inscription a été faite avec votre numéro. Répondez Y pour autoriser ou N pour signaler une fraude.`
+        });
+      }
+    }
+
+    res.status(200).json({ message: 'OTP envoyé.' });
+  } catch (err) {
+    console.error('❌ Erreur sendOTPRegister:', err);
+    res.status(500).json({ error: 'Erreur lors de l’envoi du code.' });
+  }
+};
+
+
+export const verifyOTPRegister = async (req: Request, res: Response) => {
+  const { contact, otp } = req.body;
+  const isEmail = contact.includes('@');
+
+  if (!contact || !otp) {
+    return res.status(400).json({ error: 'Contact ou OTP manquant.' });
+  }
+
+  try {
+    // Vérifie l'OTP
+    const result = await pool.query(
+      `SELECT * FROM otps WHERE contact = $1 ORDER BY expires_at DESC LIMIT 1`,
+      [contact]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(400).json({ error: 'Aucun code trouvé pour ce contact.' });
+    }
+
+    const { code, expires_at } = result.rows[0];
+
+    if (code !== otp) {
+      return res.status(400).json({ error: 'Code incorrect.' });
+    }
+
+    if (new Date() > new Date(expires_at)) {
+      return res.status(400).json({ error: 'Code expiré.' });
+    }
+
+    // Supprime les OTP existants pour éviter la réutilisation
+    await pool.query('DELETE FROM otps WHERE contact = $1', [contact]);
+
+    // Vérifie si l'utilisateur existe déjà
+    const existing = await pool.query(
+      `SELECT id FROM users WHERE ${isEmail ? 'email' : 'phone'} = $1`,
+      [contact]
+    );
+
+    if (existing.rows.length > 0) {
+      return res.status(200).json({ message: 'Utilisateur déjà inscrit.' });
+    }
+
+    // Sinon, inscription rapide
+    const newId = uuidv4();
+    const username = contact.replace(/[@.+-]/g, '_').slice(0, 20); // simple username
+    await pool.query(
+      `INSERT INTO users (id, ${isEmail ? 'email' : 'phone'}, username, is_verified, created_at)
+       VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)`,
+      [newId, contact, username, false]
+    );
+
+    return res.status(200).json({ message: 'Inscription réussie.' });
+  } catch (error) {
+    console.error('❌ Erreur verifyOTPRegister :', error);
     return res.status(500).json({ error: 'Erreur serveur' });
   }
 };
