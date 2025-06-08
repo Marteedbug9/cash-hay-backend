@@ -1,12 +1,12 @@
 services:
   - type: web
-    name: cash-hay-backend-1
+    name: cash-hay-backend
     env: node
     region: ohio
     branch: main
     rootDir: backend
-    buildCommand: npm install
-    startCommand: npx ts-node src/server.ts
+    buildCommand: npm install && npm run build
+    startCommand: node dist/server.js
     envVars:
       - key: NODE_ENV
         value: production
@@ -15,9 +15,22 @@ services:
           name: cash-hay-db
           property: connectionString
       - key: JWT_SECRET
-        value: Martine@96_Mhanac_2025_Gonaibo01011804
+        value: 6Hwa8gYB9p$kQZr!bX1tP29z&mf
       - key: EMAIL_USER
         value: djwiillmix96@gmail.com
       - key: EMAIL_PASS
         value: aqgufcxfxxrkjpzv
-
+      - key: CLOUDINARY_CLOUD_NAME
+        value: dmwcxkzs3
+      - key: CLOUDINARY_API_KEY
+        value: 922543197879887
+      - key: CLOUDINARY_API_SECRET
+        value: 6zYBa6Jo_0gEE07ZTtT7kRtIrv0
+      - key: TWILIO_ACCOUNT_SID
+        value: ACc188248a2781933a22e7e5ae25da28c4
+      - key: TWILIO_AUTH_TOKEN
+        value: 2078cd0bb9eeb740ce94158cd3381a9a
+      - key: TWILIO_PHONE_NUMBER
+        value: +17176945987
+      - key: TWILIO_VERIFY_SERVICE_SID
+        value: VA6e7adab845085fb899141f1c00c32c68  

@@ -639,24 +639,26 @@ export const uploadProfileImage = async (req: Request, res: Response) => {
 
 // 🔍 Recherche d'utilisateur par email ou téléphone
 export const searchUserByContact = async (req: Request, res: Response) => {
-  const contact = req.query.contact as string;
-  if (!contact) {
-    return res.status(400).json({ error: 'Contact manquant ou invalide' });
+  const contacts: string[] = req.body.contacts;
+
+  if (!Array.isArray(contacts) || contacts.length === 0) {
+    return res.status(400).json({ error: 'Aucun contact fourni.' });
   }
 
   try {
-    const { rows } = await pool.query(
-      'SELECT id, full_name, profile_image AS photo_url FROM users WHERE email = $1 OR phone = $1',
-      [contact]
-    );
+    const uniqueContacts = [...new Set(contacts.map(c => c.trim()))];
 
-    if (rows.length === 0) {
-      return res.status(404).json({ exists: false });
-    }
+    const query = `
+      SELECT id, full_name, email, phone, profile_image AS photo_url
+      FROM users
+      WHERE email = ANY($1) OR phone = ANY($1)
+    `;
 
-    return res.json({ exists: true, user: rows[0] });
+    const { rows } = await pool.query(query, [uniqueContacts]);
+
+    return res.status(200).json({ users: rows });
   } catch (err) {
-    console.error('❌ Erreur recherche utilisateur :', err);
+    console.error('❌ Erreur batch contacts :', err);
     return res.status(500).json({ error: 'Erreur serveur' });
   }
 };
