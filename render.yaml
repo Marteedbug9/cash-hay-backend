@@ -15,22 +15,22 @@ services:
           name: cash-hay-db
           property: connectionString
       - key: JWT_SECRET
-        value: 6Hwa8gYB9p$kQZr!bX1tP29z&mf
+        sync: false
       - key: EMAIL_USER
-        value: djwiillmix96@gmail.com
+        sync: false
       - key: EMAIL_PASS
-        value: aqgufcxfxxrkjpzv
+        sync: false
       - key: CLOUDINARY_CLOUD_NAME
-        value: dmwcxkzs3
+        sync: false
       - key: CLOUDINARY_API_KEY
-        value: 922543197879887
+        sync: false
       - key: CLOUDINARY_API_SECRET
-        value: 6zYBa6Jo_0gEE07ZTtT7kRtIrv0
+        sync: false
       - key: TWILIO_ACCOUNT_SID
-        value: ACc188248a2781933a22e7e5ae25da28c4
+        sync: false
       - key: TWILIO_AUTH_TOKEN
-        value: 2078cd0bb9eeb740ce94158cd3381a9a
+        sync: false
       - key: TWILIO_PHONE_NUMBER
-        value: +17176945987
+        sync: false
       - key: TWILIO_VERIFY_SERVICE_SID
-        value: VA6e7adab845085fb899141f1c00c32c68  
+        sync: false
