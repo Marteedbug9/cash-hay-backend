@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: cash-hay-backend-1
+    name: cash-hay-backend
     env: node
     region: ohio
     branch: main
