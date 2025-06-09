@@ -673,74 +673,40 @@ export const sendOTPRegister = async (req: Request, res: Response) => {
   const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
 
   try {
-    const existingUserRes = await pool.query(
+    const userInfo = await pool.query(
       `SELECT * FROM users WHERE ${isEmail ? 'email' : 'phone'} = $1`,
       [contact]
     );
 
-    const userInfo = existingUserRes;
     const existingUser = userInfo.rows[0];
     const existingId = existingUser?.id || null;
 
     await pool.query(
-      `INSERT INTO otps (user_id, contact, code, expires_at)
+      `INSERT INTO otps (user_id, contact_members, code, expires_at)
        VALUES ($1, $2, $3, $4)
-       ON CONFLICT (contact) DO UPDATE 
+       ON CONFLICT (contact_members) DO UPDATE 
        SET code = EXCLUDED.code, expires_at = EXCLUDED.expires_at`,
       [existingId, contact, otp, expiresAt]
     );
 
-    // Envoi OTP et vérification contact frauduleux
+    // Envoi OTP
     if (isEmail) {
       await sendEmail({
         to: contact,
         subject: 'Votre code OTP Cash Hay',
         text: `Votre code est : ${otp}`
       });
-
-      if (userInfo.rowCount && existingUser.email !== contact) {
-        await pool.query(
-          `INSERT INTO alerts (user_id, contact_attempt) VALUES ($1, $2)`,
-          [existingId, contact]
-        );
-
-        await sendEmail({
-          to: existingUser.email,
-          subject: 'Alerte de tentative d’enregistrement',
-          text: `Une tentative d’inscription a été faite avec l’email "${contact}". Répondez Y pour autoriser ou N pour signaler une fraude.`
-        });
-
-        if (existingUser.phone) {
-          await sendSMS(existingUser.phone, `Tentative OTP avec email "${contact}". Répondez Y ou N.`);
-        }
-      }
     } else {
       await sendSMS(contact, `Votre code OTP Cash Hay est : ${otp}`);
-
-      if (userInfo.rowCount && existingUser.phone !== contact) {
-        await pool.query(
-          `INSERT INTO alerts (user_id, contact_attempt) VALUES ($1, $2)`,
-          [existingId, contact]
-        );
-
-        if (existingUser.email) {
-          await sendEmail({
-            to: existingUser.email,
-            subject: 'Alerte de tentative d’enregistrement',
-            text: `Une tentative d’inscription a été faite avec le numéro "${contact}". Répondez Y pour autoriser ou N pour signaler une fraude.`
-          });
-        }
-
-        await sendSMS(existingUser.phone, `Tentative OTP avec numéro "${contact}". Répondez Y ou N.`);
-      }
     }
 
-    res.status(200).json({ message: 'OTP envoyé.' });
+    return res.status(200).json({ message: 'OTP envoyé.' });
   } catch (err) {
     console.error('❌ Erreur sendOTPRegister:', err);
     res.status(500).json({ error: 'Erreur lors de l’envoi du code.' });
   }
 };
+
 
 
 export const verifyOTPRegister = async (req: Request, res: Response) => {
@@ -753,7 +719,7 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
 
   try {
     const otpRes = await pool.query(
-      `SELECT * FROM otps WHERE contact = $1 ORDER BY expires_at DESC LIMIT 1`,
+      `SELECT * FROM otps WHERE contact_members = $1 ORDER BY expires_at DESC LIMIT 1`,
       [contact]
     );
 
@@ -766,22 +732,8 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
     if (code !== otp) return res.status(400).json({ error: 'Code incorrect.' });
     if (new Date() > new Date(expires_at)) return res.status(400).json({ error: 'Code expiré.' });
 
-    // 🛑 Vérifie les alertes
-    if (user_id) {
-      const alertRes = await pool.query(
-        `SELECT response FROM alerts WHERE user_id = $1 AND contact_attempt = $2 ORDER BY created_at DESC LIMIT 1`,
-        [user_id, contact]
-      );
+    await pool.query('DELETE FROM otps WHERE contact_members = $1', [contact]);
 
-      if (alertRes.rows.length > 0 && alertRes.rows[0].response === 'N') {
-        return res.status(403).json({ error: 'Inscription bloquée suite à une alerte.' });
-      }
-    }
-
-    // 🧹 Supprime les OTP après usage
-    await pool.query('DELETE FROM otps WHERE contact = $1', [contact]);
-
-    // 🔍 Vérifie si le user existe
     const existing = await pool.query(
       `SELECT id FROM users WHERE ${isEmail ? 'email' : 'phone'} = $1`,
       [contact]
@@ -795,24 +747,23 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
     if (existing.rows.length > 0) {
       userId = existing.rows[0].id;
 
-      // 🔁 Ajout dans members si pas déjà
       const memberCheck = await pool.query(
-        `SELECT 1 FROM members WHERE user_id = $1 AND contact = $2`,
-        [userId, contact]
+        `SELECT 1 FROM members WHERE user_id = $1`,
+        [userId]
       );
 
       if (memberCheck.rowCount === 0) {
         await pool.query(
-          `INSERT INTO members (user_id, display_name, contact, created_at)
-           VALUES ($1, $2, $3, $4)`,
-          [userId, username, contact, now]
+          `INSERT INTO members (id, user_id, display_name, contact, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [uuidv4(), userId, username, contact, now, now]
         );
       }
 
       return res.status(200).json({ message: 'Utilisateur déjà inscrit.' });
     }
 
-    // ✅ Nouvelle inscription rapide
+    // 👤 Créer nouvel utilisateur
     userId = uuidv4();
     await pool.query(
       `INSERT INTO users (id, ${isEmail ? 'email' : 'phone'}, username, is_verified, created_at)
@@ -821,12 +772,12 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
     );
 
     await pool.query(
-      `INSERT INTO members (user_id, display_name, contact, created_at)
-       VALUES ($1, $2, $3, $4)`,
-      [userId, username, contact, now]
+      `INSERT INTO members (id, user_id, display_name, contact, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [uuidv4(), userId, username, contact, now, now]
     );
 
-    // 📩 Email/SMS de bienvenue
+    // 🎉 Message de bienvenue
     if (isEmail) {
       await sendEmail({
         to: contact,
