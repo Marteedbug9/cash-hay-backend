@@ -15,9 +15,22 @@ services:
           name: cash-hay-db
           property: connectionString
       - key: JWT_SECRET
-        value: Martine@96_Mhanac_2025_Gonaibo01011804
+        sync: false
       - key: EMAIL_USER
-        value: djwiillmix96@gmail.com
+        sync: false
       - key: EMAIL_PASS
-        value: aqgufcxfxxrkjpzv
-
+        sync: false
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_PHONE_NUMBER
+        sync: false
+      - key: TWILIO_VERIFY_SERVICE_SID
+        sync: false
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
