@@ -798,22 +798,22 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
 
 export const checkMember = async (req: Request, res: Response) => {
   try {
-    const { contact } = req.body;
+    const rawContact = req.body.contact;
 
-    if (!contact) {
+    if (!rawContact) {
       return res.status(400).json({ error: 'Contact requis.' });
     }
 
+    // 🔒 Normalisation (email en minuscule, suppression espaces)
+    const contact = String(rawContact).trim().toLowerCase();
+
     const result = await pool.query(
-      'SELECT * FROM members WHERE contact = $1',
+      'SELECT id FROM members WHERE contact = $1',
       [contact]
     );
 
-    if (result.rows.length > 0) {
-      return res.status(200).json({ exists: true });
-    } else {
-      return res.status(200).json({ exists: false });
-    }
+   return res.status(200).json({ exists: (result.rowCount ?? 0) > 0 });
+
   } catch (error) {
     console.error('❌ Erreur checkMember :', error);
     return res.status(500).json({ error: 'Erreur serveur' });
