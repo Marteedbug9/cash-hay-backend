@@ -746,25 +746,27 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
   }
 
   try {
+    // 1. OTP Lookup
     const otpRes = await pool.query(
       `SELECT * FROM otps WHERE contact_members = $1 ORDER BY expires_at DESC LIMIT 1`,
-      [contact]
+      [contact.trim().toLowerCase()]
     );
 
     if (otpRes.rows.length === 0) {
       return res.status(400).json({ error: 'Aucun code trouvé pour ce contact.' });
     }
 
-    const { code, expires_at, user_id } = otpRes.rows[0];
-
+    const { code, expires_at } = otpRes.rows[0];
     if (code !== otp) return res.status(400).json({ error: 'Code incorrect.' });
     if (new Date() > new Date(expires_at)) return res.status(400).json({ error: 'Code expiré.' });
 
-    await pool.query('DELETE FROM otps WHERE contact_members = $1', [contact]);
+    await pool.query('DELETE FROM otps WHERE contact_members = $1', [contact.trim().toLowerCase()]);
 
+    // 2. User lookup
+    const normalizedContact = contact.trim().toLowerCase();
     const existing = await pool.query(
-      `SELECT id FROM users WHERE ${isEmail ? 'email' : 'phone'} = $1`,
-      [contact]
+      `SELECT id FROM users WHERE ${isEmail ? 'LOWER(email)' : 'phone'} = $1`,
+      [normalizedContact]
     );
 
     const username = contact.replace(/[@.+-]/g, '_').slice(0, 20);
@@ -775,34 +777,42 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
     if (existing.rows.length > 0) {
       userId = existing.rows[0].id;
 
+      // 3. Vérifie le membre
       const memberCheck = await pool.query(
         `SELECT 1 FROM members WHERE user_id = $1`,
         [userId]
       );
-
       if (memberCheck.rowCount === 0) {
-        await pool.query(
-          `INSERT INTO members (id, user_id, display_name, contact, created_at, updated_at)
-           VALUES ($1, $2, $3, $4, $5, $6)`,
-          [uuidv4(), userId, username, contact, now, now]
-        );
+        try {
+          await pool.query(
+            `INSERT INTO members (id, user_id, display_name, contact, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6)`,
+            [uuidv4(), userId, username, normalizedContact, now, now]
+          );
+          console.log('✅ Membre créé pour userId:', userId);
+        } catch (e) {
+          console.error('❌ Erreur insert member:', e);
+          return res.status(500).json({ error: 'Erreur création membre.' });
+        }
+      } else {
+        console.log('ℹ️ Membre déjà existant pour userId:', userId);
       }
 
-      return res.status(200).json({ message: 'Utilisateur déjà inscrit.' });
+      return res.status(200).json({ message: 'Utilisateur déjà inscrit.', userId });
     }
 
-    // 👤 Créer nouvel utilisateur
+    // 4. Créer nouvel utilisateur + membre
     userId = uuidv4();
     await pool.query(
       `INSERT INTO users (id, ${isEmail ? 'email' : 'phone'}, username, is_verified, created_at)
        VALUES ($1, $2, $3, false, $4)`,
-      [userId, contact, username, now]
+      [userId, normalizedContact, username, now]
     );
 
     await pool.query(
       `INSERT INTO members (id, user_id, display_name, contact, created_at, updated_at)
        VALUES ($1, $2, $3, $4, $5, $6)`,
-      [uuidv4(), userId, username, contact, now, now]
+      [uuidv4(), userId, username, normalizedContact, now, now]
     );
 
     // 🎉 Message de bienvenue
@@ -816,7 +826,7 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
       await sendSMS(contact, 'Bienvenue sur Cash Hay ! Votre compte a été créé.');
     }
 
-    return res.status(200).json({ message: 'Inscription réussie.' });
+    return res.status(200).json({ message: 'Inscription réussie.', userId });
   } catch (error) {
     console.error('❌ Erreur verifyOTPRegister :', error);
     return res.status(500).json({ error: 'Erreur serveur' });
