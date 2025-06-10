@@ -669,43 +669,71 @@ export const sendOTPRegister = async (req: Request, res: Response) => {
   if (!contact) return res.status(400).json({ error: 'Contact requis' });
 
   const isEmail = contact.includes('@');
-  const otp = generateOTP();
-  const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+  const now = new Date();
 
   try {
-    const userInfo = await pool.query(
-      `SELECT * FROM users WHERE ${isEmail ? 'email' : 'phone'} = $1`,
-      [contact]
+    // 1. Chercher s'il y a un OTP actif
+    const otpQuery = await pool.query(
+      `SELECT * FROM otps WHERE contact_members = $1 AND expires_at > $2`,
+      [contact, now]
     );
+    const activeOtp = otpQuery.rows[0];
 
-    const existingUser = userInfo.rows[0];
-    const existingId = existingUser?.id || null;
+    let otp = '';
+    let expiresAt: Date;
 
-    await pool.query(
-      `INSERT INTO otps (user_id, contact_members, code, expires_at)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (contact_members) DO UPDATE 
-       SET code = EXCLUDED.code, expires_at = EXCLUDED.expires_at`,
-      [existingId, contact, otp, expiresAt]
-    );
-
-    // Envoi OTP
-    if (isEmail) {
-      await sendEmail({
-        to: contact,
-        subject: 'Votre code OTP Cash Hay',
-        text: `Votre code est : ${otp}`
-      });
+    if (activeOtp) {
+      // Il existe déjà un OTP actif pour ce contact
+      otp = activeOtp.code;
+      expiresAt = activeOtp.expires_at;
     } else {
-      await sendSMS(contact, `Votre code OTP Cash Hay est : ${otp}`);
+      // On génère un nouveau code car aucun OTP actif
+      otp = generateOTP();
+      expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+
+      // Associer l'OTP à un user_id si existant
+      const userInfo = await pool.query(
+        `SELECT * FROM users WHERE ${isEmail ? 'email' : 'phone'} = $1`,
+        [contact]
+      );
+      const existingUser = userInfo.rows[0];
+      const existingId = existingUser?.id || null;
+
+      // Insert ou update l'OTP
+      await pool.query(
+        `INSERT INTO otps (user_id, contact_members, code, expires_at)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (contact_members) DO UPDATE 
+         SET code = EXCLUDED.code, expires_at = EXCLUDED.expires_at`,
+        [existingId, contact, otp, expiresAt]
+      );
     }
 
-    return res.status(200).json({ message: 'OTP envoyé.' });
+    // Envoi OTP UNIQUEMENT si nouvel OTP généré ou si demandé explicitement (ex: changement de contact)
+    if (!activeOtp) {
+      if (isEmail) {
+        await sendEmail({
+          to: contact,
+          subject: 'Votre code OTP Cash Hay',
+          text: `Votre code est : ${otp}`
+        });
+      } else {
+        await sendSMS(contact, `Votre code OTP Cash Hay est : ${otp}`);
+      }
+    }
+
+    return res.status(200).json({
+      message: activeOtp
+        ? 'OTP déjà envoyé (toujours actif).'
+        : 'OTP envoyé.',
+      expiresAt
+    });
   } catch (err) {
     console.error('❌ Erreur sendOTPRegister:', err);
-    res.status(500).json({ error: 'Erreur lors de l’envoi du code.' });
+    res.status(500).json({ error: "Erreur lors de l’envoi du code." });
   }
 };
+
 
 
 

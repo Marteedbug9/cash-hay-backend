@@ -1,4 +1,3 @@
-// src/routes/transactionRoutes.ts
 import { Router } from 'express';
 import {
   getTransactions,
@@ -11,9 +10,10 @@ import {
   acceptRequest,
   cancelRequest,
   getRequests,
-  // updateBalance // 🔧 Si tu veux l'utiliser, décommente et ajoute la route en bas
+  // updateBalance
 } from '../controllers/transactionController';
 import { verifyToken } from '../middlewares/verifyToken';
+import { verifyMember } from '../middlewares/verifyMember';
 
 const router = Router();
 
@@ -23,31 +23,31 @@ router.get('/balance', verifyToken, getBalance);
 // 📜 Historique des transactions
 router.get('/', verifyToken, getTransactions);
 
-// ➕ Dépôt
-router.post('/deposit', verifyToken, deposit);
+// ➕ Dépôt (option : protège par verifyMember aussi)
+router.post('/deposit', verifyToken, verifyMember, deposit);
 
 // ➖ Retrait
-router.post('/withdraw', verifyToken, withdraw);
+router.post('/withdraw', verifyToken, verifyMember, withdraw);
 
 // 🔁 Transfert entre utilisateurs
-router.post('/transfer', verifyToken, transfer);
+router.post('/transfer', verifyToken, verifyMember, transfer);
 
-// 📝 Création manuelle d'une transaction
-router.post('/', verifyToken, createTransaction);
+// 📝 Création manuelle d'une transaction (option : protège par verifyMember ?)
+router.post('/', verifyToken, verifyMember, createTransaction);
 
 // 📥 Demander de l’argent
-router.post('/request', verifyToken, requestMoney);
+router.post('/request', verifyToken, verifyMember, requestMoney);
 
 // ✅ Accepter une demande
-router.post('/accept-request', verifyToken, acceptRequest);
+router.post('/accept-request', verifyToken, verifyMember, acceptRequest);
 
 // ❌ Refuser ou annuler une demande
-router.post('/cancel-request', verifyToken, cancelRequest);
+router.post('/cancel-request', verifyToken, verifyMember, cancelRequest);
 
-// 📋 Liste des demandes
+// 📋 Liste des demandes (peut rester avec verifyToken simple)
 router.get('/requests', verifyToken, getRequests);
 
 // 🔧 Route manquante ?
-// router.post('/update-balance', verifyToken, updateBalance);
+// router.post('/update-balance', verifyToken, verifyMember, updateBalance);
 
 export default router;
