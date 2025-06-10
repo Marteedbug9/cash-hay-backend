@@ -794,3 +794,28 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
     return res.status(500).json({ error: 'Erreur serveur' });
   }
 };
+
+
+export const checkMember = async (req: Request, res: Response) => {
+  try {
+    const { contact } = req.body;
+
+    if (!contact) {
+      return res.status(400).json({ error: 'Contact requis.' });
+    }
+
+    const result = await pool.query(
+      'SELECT * FROM members WHERE contact = $1',
+      [contact]
+    );
+
+    if (result.rows.length > 0) {
+      return res.status(200).json({ exists: true });
+    } else {
+      return res.status(200).json({ exists: false });
+    }
+  } catch (error) {
+    console.error('❌ Erreur checkMember :', error);
+    return res.status(500).json({ error: 'Erreur serveur' });
+  }
+};

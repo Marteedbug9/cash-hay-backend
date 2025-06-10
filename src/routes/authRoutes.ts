@@ -13,6 +13,7 @@ import {
   uploadProfileImage,
   verifyOTPRegister,
   sendOTPRegister,
+  checkMember,
   searchUserByContact
 } from '../controllers/authController';
 import upload from '../middlewares/upload';
@@ -51,6 +52,8 @@ router.post('/resend-otp', resendOTP);
 // ➕ Ajouter ceci pour l’inscription rapide
 router.post('/send-otp-register', sendOTPRegister);
 router.post('/verify-otp-register', verifyOTPRegister);
+router.post('/check-member', verifyToken, checkMember);
+
 
 // Confirmation tentative suspecte
 router.post('/confirm-suspicious-attempt', confirmSuspiciousAttempt);
