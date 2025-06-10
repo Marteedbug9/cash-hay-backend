@@ -747,9 +747,11 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
 
   try {
     // 1. OTP Lookup
+    const normalizedContact = contact.trim().toLowerCase();
+
     const otpRes = await pool.query(
       `SELECT * FROM otps WHERE contact_members = $1 ORDER BY expires_at DESC LIMIT 1`,
-      [contact.trim().toLowerCase()]
+      [normalizedContact]
     );
 
     if (otpRes.rows.length === 0) {
@@ -760,40 +762,33 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
     if (code !== otp) return res.status(400).json({ error: 'Code incorrect.' });
     if (new Date() > new Date(expires_at)) return res.status(400).json({ error: 'Code expiré.' });
 
-    await pool.query('DELETE FROM otps WHERE contact_members = $1', [contact.trim().toLowerCase()]);
+    await pool.query('DELETE FROM otps WHERE contact_members = $1', [normalizedContact]);
 
-    // 2. User lookup
-    const normalizedContact = contact.trim().toLowerCase();
-    const existing = await pool.query(
-      `SELECT id FROM users WHERE ${isEmail ? 'LOWER(email)' : 'phone'} = $1`,
-      [normalizedContact]
-    );
+    // 2. User lookup (par email ou phone normalisé)
+    const userQuery = isEmail
+      ? `SELECT id FROM users WHERE LOWER(email) = $1`
+      : `SELECT id FROM users WHERE phone = $1`;
+    const existing = await pool.query(userQuery, [normalizedContact]);
 
-    const username = contact.replace(/[@.+-]/g, '_').slice(0, 20);
+    const username = normalizedContact.replace(/[@.+-]/g, '_').slice(0, 20);
     const now = new Date();
-
     let userId: string;
 
     if (existing.rows.length > 0) {
       userId = existing.rows[0].id;
 
-      // 3. Vérifie le membre
+      // 3. Vérifie/insère dans members
       const memberCheck = await pool.query(
         `SELECT 1 FROM members WHERE user_id = $1`,
         [userId]
       );
       if (memberCheck.rowCount === 0) {
-        try {
-          await pool.query(
-            `INSERT INTO members (id, user_id, display_name, contact, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6)`,
-            [uuidv4(), userId, username, normalizedContact, now, now]
-          );
-          console.log('✅ Membre créé pour userId:', userId);
-        } catch (e) {
-          console.error('❌ Erreur insert member:', e);
-          return res.status(500).json({ error: 'Erreur création membre.' });
-        }
+        await pool.query(
+          `INSERT INTO members (id, user_id, display_name, contact, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [uuidv4(), userId, username, normalizedContact, now, now]
+        );
+        console.log('✅ Membre créé pour userId:', userId);
       } else {
         console.log('ℹ️ Membre déjà existant pour userId:', userId);
       }
@@ -832,6 +827,7 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
     return res.status(500).json({ error: 'Erreur serveur' });
   }
 };
+
 
 
 export const checkMember = async (req: Request, res: Response) => {
