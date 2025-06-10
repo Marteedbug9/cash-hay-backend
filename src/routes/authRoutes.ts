@@ -27,7 +27,7 @@ router.post('/login', login);
 router.get('/profile', verifyToken, getProfile);
 
 // Recherche utilisateur
-router.get('/search', verifyToken, searchUserByContact);
+router.post('/search-user', verifyToken, searchUserByContact);
 
 // Récupération de compte / OTP
 router.post('/recovery/start', startRecovery);
