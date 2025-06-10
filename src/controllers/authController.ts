@@ -827,17 +827,12 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
 export const checkMember = async (req: Request, res: Response) => {
   try {
     const userId = req.user?.id;
-    if (!userId) {
-      return res.status(401).json({ error: 'Authentification requise.' });
-    }
-    const result = await pool.query(
-      'SELECT id FROM members WHERE user_id = $1',
-      [userId]
-    );
+    if (!userId) return res.status(401).json({ error: 'Authentification requise.' });
+
+    const result = await pool.query('SELECT id FROM members WHERE user_id = $1', [userId]);
     return res.status(200).json({ exists: (result.rowCount ?? 0) > 0 });
   } catch (error) {
     console.error('❌ Erreur checkMember :', error);
     return res.status(500).json({ error: 'Erreur serveur' });
   }
 };
-
