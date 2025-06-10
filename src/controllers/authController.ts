@@ -766,48 +766,64 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
 
     // 2. User lookup (par email ou phone normalisé)
     const userQuery = isEmail
-      ? `SELECT id FROM users WHERE LOWER(email) = $1`
-      : `SELECT id FROM users WHERE phone = $1`;
+      ? `SELECT id, member_id FROM users WHERE LOWER(email) = $1`
+      : `SELECT id, member_id FROM users WHERE phone = $1`;
     const existing = await pool.query(userQuery, [normalizedContact]);
 
     const username = normalizedContact.replace(/[@.+-]/g, '_').slice(0, 20);
     const now = new Date();
     let userId: string;
+    let memberId: string;
 
     if (existing.rows.length > 0) {
       userId = existing.rows[0].id;
 
       // 3. Vérifie/insère dans members
       const memberCheck = await pool.query(
-        `SELECT 1 FROM members WHERE user_id = $1`,
+        `SELECT id FROM members WHERE user_id = $1`,
         [userId]
       );
       if (memberCheck.rowCount === 0) {
+        memberId = uuidv4();
         await pool.query(
           `INSERT INTO members (id, user_id, display_name, contact, created_at, updated_at)
            VALUES ($1, $2, $3, $4, $5, $6)`,
-          [uuidv4(), userId, username, normalizedContact, now, now]
+          [memberId, userId, username, normalizedContact, now, now]
+        );
+        // 🔗 Met à jour le user pour lier au member
+        await pool.query(
+          `UPDATE users SET member_id = $1 WHERE id = $2`,
+          [memberId, userId]
         );
         console.log('✅ Membre créé pour userId:', userId);
       } else {
+        // Déjà membre : on peut vérifier/mettre à jour si jamais ce n'est pas lié
+        memberId = memberCheck.rows[0].id;
+        if (!existing.rows[0].member_id) {
+          await pool.query(
+            `UPDATE users SET member_id = $1 WHERE id = $2`,
+            [memberId, userId]
+          );
+        }
         console.log('ℹ️ Membre déjà existant pour userId:', userId);
       }
 
-      return res.status(200).json({ message: 'Utilisateur déjà inscrit.', userId });
+      return res.status(200).json({ message: 'Utilisateur déjà inscrit.', userId, memberId });
     }
 
     // 4. Créer nouvel utilisateur + membre
     userId = uuidv4();
+    memberId = uuidv4();
     await pool.query(
-      `INSERT INTO users (id, ${isEmail ? 'email' : 'phone'}, username, is_verified, created_at)
-       VALUES ($1, $2, $3, false, $4)`,
-      [userId, normalizedContact, username, now]
+      `INSERT INTO users (id, ${isEmail ? 'email' : 'phone'}, username, is_verified, created_at, member_id)
+       VALUES ($1, $2, $3, false, $4, $5)`,
+      [userId, normalizedContact, username, now, memberId]
     );
 
     await pool.query(
       `INSERT INTO members (id, user_id, display_name, contact, created_at, updated_at)
        VALUES ($1, $2, $3, $4, $5, $6)`,
-      [uuidv4(), userId, username, normalizedContact, now, now]
+      [memberId, userId, username, normalizedContact, now, now]
     );
 
     // 🎉 Message de bienvenue
@@ -821,7 +837,7 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
       await sendSMS(contact, 'Bienvenue sur Cash Hay ! Votre compte a été créé.');
     }
 
-    return res.status(200).json({ message: 'Inscription réussie.', userId });
+    return res.status(200).json({ message: 'Inscription réussie.', userId, memberId });
   } catch (error) {
     console.error('❌ Erreur verifyOTPRegister :', error);
     return res.status(500).json({ error: 'Erreur serveur' });
@@ -830,15 +846,29 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
 
 
 
+
 export const checkMember = async (req: Request, res: Response) => {
   try {
     const userId = req.user?.id;
-    console.log('[check-member] userId =', userId);
-    const result = await pool.query('SELECT id FROM members WHERE user_id = $1', [userId]);
-    console.log('[check-member] nb membres trouvés =', result.rowCount);
-    return res.status(200).json({ exists: (result.rowCount ?? 0) > 0 });
+    if (!userId) return res.status(401).json({ error: 'Token utilisateur manquant.' });
+
+    const userRes = await pool.query('SELECT member_id FROM users WHERE id = $1', [userId]);
+    const memberId = userRes.rows[0]?.member_id;
+
+    let exists = false;
+
+    if (memberId) {
+      const memberRes = await pool.query('SELECT 1 FROM members WHERE id = $1', [memberId]);
+      exists = (memberRes.rowCount ?? 0) > 0;
+    } else {
+      const result = await pool.query('SELECT 1 FROM members WHERE user_id = $1', [userId]);
+      exists = (result.rowCount ?? 0) > 0;
+    }
+
+    return res.status(200).json({ exists });
   } catch (error) {
     console.error('❌ Erreur checkMember :', error);
     return res.status(500).json({ error: 'Erreur serveur' });
   }
 };
+
