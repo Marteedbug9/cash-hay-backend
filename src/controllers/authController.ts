@@ -790,15 +790,15 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
            VALUES ($1, $2, $3, $4, $5, $6)`,
           [memberId, userId, username, normalizedContact, now, now]
         );
-        // 🔗 Met à jour le user pour lier au member
+        // Met à jour le user avec le nouveau memberId
         await pool.query(
           `UPDATE users SET member_id = $1 WHERE id = $2`,
           [memberId, userId]
         );
         console.log('✅ Membre créé pour userId:', userId);
       } else {
-        // Déjà membre : on peut vérifier/mettre à jour si jamais ce n'est pas lié
         memberId = memberCheck.rows[0].id;
+        // Si pas encore lié côté users, on le set
         if (!existing.rows[0].member_id) {
           await pool.query(
             `UPDATE users SET member_id = $1 WHERE id = $2`,
@@ -843,9 +843,6 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
     return res.status(500).json({ error: 'Erreur serveur' });
   }
 };
-
-
-
 
 export const checkMember = async (req: Request, res: Response) => {
   try {
