@@ -11,6 +11,7 @@ import transactionRoutes from './routes/transactionRoutes';
 import ipRoutes from './routes/ipRoutes';
 import cardRoutes from './routes/cardRoutes';
 import adminRoutes from './routes/adminRoutes';
+import memberRoutes from './routes/memberRoutes';
 
 import pool from './config/db'; // Connexion test DB
 
@@ -27,6 +28,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/transactions', transactionRoutes);
 app.use('/api/cards', cardRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/members', memberRoutes);
 
 // ✅ Vérifie DB et démarre serveur
 pool.query('SELECT NOW()')

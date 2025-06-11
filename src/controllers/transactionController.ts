@@ -558,10 +558,8 @@ export const getMonthlyStatement = async (req: Request, res: Response) => {
        ORDER BY created_at ASC`,
       [userId, monthStart, monthEnd]
     );
-
     const transactions = transactionsResult.rows;
 
-    // Calcule la somme finale sur la période
     const sumResult = await pool.query(
       `SELECT SUM(
          CASE WHEN type IN ('deposit', 'receive', 'request_recharge_accepted') THEN amount
@@ -576,14 +574,15 @@ export const getMonthlyStatement = async (req: Request, res: Response) => {
     );
     const total = sumResult.rows[0]?.total || 0;
 
-    // Génération PDF (exemple minimal)
+    // PDF - commence à pipe APRÈS toutes les erreurs potentielles
     const doc = new PDFDocument();
     res.setHeader('Content-type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="statement-${month}.pdf"`);
+    doc.pipe(res);
 
     doc.fontSize(18).text(`Relevé de Compte - ${month}`, { align: 'center' });
     doc.moveDown();
-    doc.fontSize(12).text(`Nom utilisateur: ${req.user?.username}`);
+    doc.fontSize(12).text(`Utilisateur: ${req.user?.username || userId}`);
     doc.moveDown();
     doc.text('Transactions :');
     doc.moveDown();
@@ -598,9 +597,15 @@ export const getMonthlyStatement = async (req: Request, res: Response) => {
     doc.fontSize(14).text(`Total net du mois : ${total} HTG`, { align: 'right' });
 
     doc.end();
-    doc.pipe(res);
   } catch (err) {
+    // S'IL Y A ERREUR, renvoie du JSON uniquement si tu n’as pas encore fait pipe sur res
+    // Si le PDF a déjà commencé à s'écrire, tu ne peux plus envoyer du JSON proprement !
     console.error('❌ Erreur statement:', err);
-    res.status(500).json({ error: 'Erreur serveur.' });
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Erreur serveur.' });
+    } else {
+      // Optionnel: ferme le stream et laisse le client gérer l’erreur PDF côté front
+      res.end();
+    }
   }
 };
