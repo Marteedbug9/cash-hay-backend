@@ -647,22 +647,39 @@ export const searchUserByContact = async (req: Request, res: Response) => {
   }
 
   try {
-    const uniqueContacts = [...new Set(contacts.map(c => c.trim()))];
+    // Nettoyer et unicité
+    const uniqueContacts = [...new Set(contacts.map(c => c.trim().toLowerCase()))];
 
+    // On récupère le membre ET on join les infos users
     const query = `
-      SELECT id, full_name, email, phone, profile_image AS photo_url
-      FROM users
-      WHERE email = ANY($1) OR phone = ANY($1)
+      SELECT 
+        m.id AS member_id,
+        m.contact,
+        m.display_name,
+        m.photo_url,
+        u.id AS user_id,
+        u.email,
+        u.phone,
+        u.username,
+        u.first_name,
+        u.last_name,
+        (u.first_name || ' ' || u.last_name) AS full_name,
+        u.profile_image
+      FROM members m
+      LEFT JOIN users u ON m.user_id = u.id
+      WHERE m.contact = ANY($1)
     `;
 
     const { rows } = await pool.query(query, [uniqueContacts]);
 
+    // Tu peux faire un mapping pour n’exposer que ce que tu veux côté frontend
     return res.status(200).json({ users: rows });
   } catch (err) {
     console.error('❌ Erreur batch contacts :', err);
     return res.status(500).json({ error: 'Erreur serveur' });
   }
 };
+
 
 export const sendOTPRegister = async (req: Request, res: Response) => {
   const { contact } = req.body;
