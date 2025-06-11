@@ -656,7 +656,6 @@ export const searchUserByContact = async (req: Request, res: Response) => {
         m.id AS member_id,
         m.contact,
         m.display_name,
-        m.photo_url,
         u.id AS user_id,
         u.email,
         u.phone,
@@ -664,7 +663,7 @@ export const searchUserByContact = async (req: Request, res: Response) => {
         u.first_name,
         u.last_name,
         (u.first_name || ' ' || u.last_name) AS full_name,
-        u.profile_image
+        u.photo_url
       FROM members m
       LEFT JOIN users u ON m.user_id = u.id
       WHERE m.contact = ANY($1)
@@ -672,7 +671,6 @@ export const searchUserByContact = async (req: Request, res: Response) => {
 
     const { rows } = await pool.query(query, [uniqueContacts]);
 
-    // Tu peux faire un mapping pour n’exposer que ce que tu veux côté frontend
     return res.status(200).json({ users: rows });
   } catch (err) {
     console.error('❌ Erreur batch contacts :', err);
