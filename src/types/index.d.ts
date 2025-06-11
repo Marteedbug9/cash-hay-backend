@@ -6,6 +6,7 @@ declare global {
     interface UserPayload {
       id: string;
       email?: string;
+       username?: string; 
       role?: 'admin' | 'user';
       is_otp_verified?: boolean;
     }

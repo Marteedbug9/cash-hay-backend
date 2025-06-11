@@ -9,6 +9,7 @@ import {
   requestMoney,
   acceptRequest,
   cancelRequest,
+  getMonthlyStatement,
   getRequests,
   // updateBalance
 } from '../controllers/transactionController';
@@ -47,6 +48,7 @@ router.post('/cancel-request', verifyToken, verifyMember, cancelRequest);
 // 📋 Liste des demandes (peut rester avec verifyToken simple)
 router.get('/requests', verifyToken, getRequests);
 
+router.get('/transactions/statement', verifyToken, getMonthlyStatement);
 // 🔧 Route manquante ?
 // router.post('/update-balance', verifyToken, verifyMember, updateBalance);
 

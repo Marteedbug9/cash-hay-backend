@@ -2,6 +2,7 @@
 import { Request, Response } from 'express';
 import pool from '../config/db';
 import { v4 as uuidv4 } from 'uuid';
+import PDFDocument from 'pdfkit';
 
 
 export const getTransactions = async (req: Request, res: Response) => {
@@ -532,5 +533,74 @@ export const getRequests = async (req: Request, res: Response) => {
   } catch (error) {
     console.error('❌ Erreur getRequests :', error);
     return res.status(500).json({ error: 'Erreur serveur lors de la récupération des demandes.' });
+  }
+};
+
+export const getMonthlyStatement = async (req: Request, res: Response) => {
+  const userId = req.user?.id;
+  const { month } = req.query; // ex: "2024-06"
+  if (!month) {
+    return res.status(400).json({ error: 'Paramètre "month" requis (YYYY-MM)' });
+  }
+
+  // Calcule les bornes de dates
+  const monthStart = `${month}-01`;
+  const nextMonth = new Date(monthStart);
+  nextMonth.setMonth(nextMonth.getMonth() + 1);
+  const monthEnd = nextMonth.toISOString().split('T')[0];
+
+  try {
+    const transactionsResult = await pool.query(
+      `SELECT * FROM transactions 
+       WHERE user_id = $1 
+         AND created_at >= $2
+         AND created_at < $3
+       ORDER BY created_at ASC`,
+      [userId, monthStart, monthEnd]
+    );
+
+    const transactions = transactionsResult.rows;
+
+    // Calcule la somme finale sur la période
+    const sumResult = await pool.query(
+      `SELECT SUM(
+         CASE WHEN type IN ('deposit', 'receive', 'request_recharge_accepted') THEN amount
+              WHEN type IN ('withdraw', 'transfer', 'card_payment', 'fee') THEN -amount
+              ELSE 0 END
+        ) AS total
+        FROM transactions
+        WHERE user_id = $1
+          AND created_at >= $2
+          AND created_at < $3`,
+      [userId, monthStart, monthEnd]
+    );
+    const total = sumResult.rows[0]?.total || 0;
+
+    // Génération PDF (exemple minimal)
+    const doc = new PDFDocument();
+    res.setHeader('Content-type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="statement-${month}.pdf"`);
+
+    doc.fontSize(18).text(`Relevé de Compte - ${month}`, { align: 'center' });
+    doc.moveDown();
+    doc.fontSize(12).text(`Nom utilisateur: ${req.user?.username}`);
+    doc.moveDown();
+    doc.text('Transactions :');
+    doc.moveDown();
+
+    transactions.forEach(tx => {
+      doc.text(
+        `${tx.created_at} | ${tx.type} | ${tx.amount} HTG | statut: ${tx.status} | ${tx.description || ''}`
+      );
+    });
+
+    doc.moveDown();
+    doc.fontSize(14).text(`Total net du mois : ${total} HTG`, { align: 'right' });
+
+    doc.end();
+    doc.pipe(res);
+  } catch (err) {
+    console.error('❌ Erreur statement:', err);
+    res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
