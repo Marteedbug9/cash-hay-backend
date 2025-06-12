@@ -377,7 +377,10 @@ export const requestMoney = async (req: Request, res: Response) => {
   const requesterId = req.user?.id;
   const { recipientUsername, amount } = req.body;
 
+  console.log('🟡 Nouvelle demande reçue', { requesterId, recipientUsername, amount });
+
   if (!recipientUsername || !amount || isNaN(amount) || amount <= 0) {
+    console.log('⛔ Données invalides', { recipientUsername, amount });
     return res.status(400).json({ error: 'Données invalides.' });
   }
 
@@ -391,8 +394,11 @@ export const requestMoney = async (req: Request, res: Response) => {
         'SELECT id FROM members WHERE contact = $1',
         [recipientUsername]
       );
+      console.log('🔎 Résultat SELECT members:', memberRes.rows);
+
       if (memberRes.rows.length === 0) {
         await client.query('ROLLBACK');
+        console.log('⛔ Aucun membre avec ce contact:', recipientUsername);
         return res.status(404).json({ error: 'Destinataire introuvable ou non inscrit.' });
       }
       const memberId = memberRes.rows[0].id;
@@ -402,14 +408,17 @@ export const requestMoney = async (req: Request, res: Response) => {
         'SELECT id, full_name FROM users WHERE member_id = $1',
         [memberId]
       );
+      console.log('🔎 Résultat SELECT users:', recipientUserRes.rows);
+
       if (recipientUserRes.rows.length === 0) {
         await client.query('ROLLBACK');
+        console.log('⛔ Aucun utilisateur lié à ce membre:', memberId);
         return res.status(404).json({ error: 'Aucun utilisateur lié à ce membre.' });
       }
       const recipientId = recipientUserRes.rows[0].id;
       const recipientFullName = recipientUserRes.rows[0].full_name;
 
-      // Protection : empêche de se demander de l’argent à soi-même
+      // Protection : empêche de se demander de l’argent à soi-même
       const requesterUserRes = await client.query(
         'SELECT full_name FROM users WHERE id = $1',
         [requesterId]
@@ -417,6 +426,7 @@ export const requestMoney = async (req: Request, res: Response) => {
       const requesterFullName = requesterUserRes.rows[0]?.full_name;
       if (recipientFullName && requesterFullName && recipientFullName === requesterFullName) {
         await client.query('ROLLBACK');
+        console.log('⛔ Tentative d’auto-demande :', recipientFullName);
         return res.status(400).json({ error: 'Impossible de vous faire une demande à vous-même.' });
       }
 
@@ -428,19 +438,22 @@ export const requestMoney = async (req: Request, res: Response) => {
       );
 
       await client.query('COMMIT');
+      console.log('✅ Demande d’argent enregistrée', { requesterId, recipientId, amount });
       res.status(200).json({ message: 'Demande d’argent enregistrée avec succès.' });
 
     } catch (error) {
       await client.query('ROLLBACK');
+      console.error('❌ Erreur transaction SQL:', error);
       throw error;
     } finally {
       client.release();
     }
   } catch (err) {
-    console.error('❌ Erreur requestMoney:', err);
+    console.error('❌ Erreur requestMoney (catch global):', err);
     res.status(500).json({ error: 'Erreur serveur lors de la demande.' });
   }
 };
+
 
 
 export const acceptRequest = async (req: Request, res: Response) => {
