@@ -190,7 +190,10 @@ export const transfer = async (req: Request, res: Response) => {
   const { recipientUsername, amount } = req.body;
   const transferFee = 0.57;
 
+  console.log('➡️ Transfer called. Sender:', senderId, 'Recipient:', recipientUsername, 'Amount:', amount);
+
   if (!recipientUsername || !amount || isNaN(amount) || amount <= 0) {
+    console.log('❌ Données invalides:', { recipientUsername, amount });
     return res.status(400).json({ error: 'Données invalides.' });
   }
 
@@ -205,25 +208,28 @@ export const transfer = async (req: Request, res: Response) => {
       let memberRes;
 
       if (isEmail) {
-        // Recherche email insensible à la casse
+        console.log('🔎 Recherche membre par EMAIL:', cleanedRecipient);
         memberRes = await client.query(
-          'SELECT id FROM members WHERE LOWER(contact) = $1',
+          'SELECT id, contact FROM members WHERE LOWER(contact) = $1',
           [cleanedRecipient]
         );
       } else {
         // Pour téléphone, match sur version nettoyée et/ou 8 derniers chiffres
         const onlyDigits = cleanedRecipient.replace(/\D/g, '');
+        console.log('🔎 Recherche membre par PHONE:', onlyDigits);
         memberRes = await client.query(
-          `SELECT id FROM members
+          `SELECT id, contact FROM members
             WHERE
               REPLACE(REPLACE(REPLACE(contact, '+', ''), ' ', ''), '-', '') = $1
               OR RIGHT(REPLACE(REPLACE(REPLACE(contact, '+', ''), ' ', ''), '-', ''), 8) = $2`,
           [onlyDigits, onlyDigits.slice(-8)]
         );
       }
+      console.log('🧩 memberRes:', memberRes.rows);
 
       if (!memberRes.rows.length) {
         await client.query('ROLLBACK');
+        console.log('❌ Destinataire introuvable');
         return res.status(404).json({ error: 'Destinataire introuvable.' });
       }
 
@@ -234,10 +240,14 @@ export const transfer = async (req: Request, res: Response) => {
         'SELECT id, first_name, last_name FROM users WHERE member_id = $1',
         [memberId]
       );
+      console.log('🧑 recipientUserRes:', recipientUserRes.rows);
+
       if (recipientUserRes.rows.length === 0) {
         await client.query('ROLLBACK');
+        console.log('❌ Aucun utilisateur lié à ce membre.');
         return res.status(404).json({ error: 'Aucun utilisateur lié à ce membre.' });
       }
+
       const recipientId = recipientUserRes.rows[0].id;
       const recipientFullName = [recipientUserRes.rows[0].first_name, recipientUserRes.rows[0].last_name].join(' ');
 
@@ -247,8 +257,12 @@ export const transfer = async (req: Request, res: Response) => {
         [senderId]
       );
       const senderFullName = [senderUserRes.rows[0]?.first_name, senderUserRes.rows[0]?.last_name].join(' ');
+
+      console.log('🧑 Sender:', senderFullName, 'Recipient:', recipientFullName);
+
       if (recipientFullName && senderFullName && recipientFullName === senderFullName) {
         await client.query('ROLLBACK');
+        console.log('❌ Auto-transfert détecté');
         return res.status(400).json({ error: 'Vous ne pouvez pas envoyer de l’argent à vous-même.' });
       }
 
@@ -260,8 +274,11 @@ export const transfer = async (req: Request, res: Response) => {
         [senderId, weekAgo]
       );
       const weeklyTotal = parseFloat(weeklyTotalResult.rows[0]?.total || '0');
+      console.log('📅 Total hebdo:', weeklyTotal);
+
       if (weeklyTotal + amount > 100000) {
         await client.query('ROLLBACK');
+        console.log('❌ Limite hebdo dépassée');
         return res.status(400).json({ error: 'Limite hebdomadaire de 100 000 HTG dépassée.' });
       }
 
@@ -271,8 +288,11 @@ export const transfer = async (req: Request, res: Response) => {
         [senderId]
       );
       const senderBalance = parseFloat(senderBalanceRes.rows[0]?.balance || '0');
+      console.log('💸 Sender balance:', senderBalance);
+
       if (senderBalance < amount + transferFee) {
         await client.query('ROLLBACK');
+        console.log('❌ Fonds insuffisants');
         return res.status(400).json({ error: 'Fonds insuffisants (incluant les frais).' });
       }
 
@@ -308,9 +328,11 @@ export const transfer = async (req: Request, res: Response) => {
       );
 
       await client.query('COMMIT');
+      console.log('✅ Transfert effectué avec succès !');
       res.status(200).json({ message: 'Transfert effectué avec succès.' });
     } catch (error) {
       await client.query('ROLLBACK');
+      console.error('❌ ERROR in try block:', error);
       throw error;
     } finally {
       client.release();
@@ -320,6 +342,7 @@ export const transfer = async (req: Request, res: Response) => {
     res.status(500).json({ error: 'Erreur serveur lors du transfert.' });
   }
 };
+
 
 export const getBalance = async (req: Request, res: Response) => {
   const userId = req.user?.id;
