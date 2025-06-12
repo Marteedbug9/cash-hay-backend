@@ -200,19 +200,38 @@ export const transfer = async (req: Request, res: Response) => {
       await client.query('BEGIN');
 
       // 1. Cherche le membre avec ce contact (email/tel)
-      const memberRes = await client.query(
-        'SELECT id FROM members WHERE contact = $1',
-        [recipientUsername]
-      );
-      if (memberRes.rows.length === 0) {
+      const cleanedRecipient = recipientUsername.trim().toLowerCase();
+      const isEmail = cleanedRecipient.includes('@');
+      let memberRes;
+
+      if (isEmail) {
+        // Recherche email insensible à la casse
+        memberRes = await client.query(
+          'SELECT id FROM members WHERE LOWER(contact) = $1',
+          [cleanedRecipient]
+        );
+      } else {
+        // Pour téléphone, match sur version nettoyée et/ou 8 derniers chiffres
+        const onlyDigits = cleanedRecipient.replace(/\D/g, '');
+        memberRes = await client.query(
+          `SELECT id FROM members
+            WHERE
+              REPLACE(REPLACE(REPLACE(contact, '+', ''), ' ', ''), '-', '') = $1
+              OR RIGHT(REPLACE(REPLACE(REPLACE(contact, '+', ''), ' ', ''), '-', ''), 8) = $2`,
+          [onlyDigits, onlyDigits.slice(-8)]
+        );
+      }
+
+      if (!memberRes.rows.length) {
         await client.query('ROLLBACK');
         return res.status(404).json({ error: 'Destinataire introuvable.' });
       }
+
       const memberId = memberRes.rows[0].id;
 
       // 2. Cherche le user rattaché à ce membre
       const recipientUserRes = await client.query(
-        'SELECT id, full_name FROM users WHERE member_id = $1',
+        'SELECT id, first_name, last_name FROM users WHERE member_id = $1',
         [memberId]
       );
       if (recipientUserRes.rows.length === 0) {
@@ -220,14 +239,14 @@ export const transfer = async (req: Request, res: Response) => {
         return res.status(404).json({ error: 'Aucun utilisateur lié à ce membre.' });
       }
       const recipientId = recipientUserRes.rows[0].id;
-      const recipientFullName = recipientUserRes.rows[0].full_name;
+      const recipientFullName = [recipientUserRes.rows[0].first_name, recipientUserRes.rows[0].last_name].join(' ');
 
       // (Sécurité) Empêche l'auto-transfert
       const senderUserRes = await client.query(
-        'SELECT full_name FROM users WHERE id = $1',
+        'SELECT first_name, last_name FROM users WHERE id = $1',
         [senderId]
       );
-      const senderFullName = senderUserRes.rows[0]?.full_name;
+      const senderFullName = [senderUserRes.rows[0]?.first_name, senderUserRes.rows[0]?.last_name].join(' ');
       if (recipientFullName && senderFullName && recipientFullName === senderFullName) {
         await client.query('ROLLBACK');
         return res.status(400).json({ error: 'Vous ne pouvez pas envoyer de l’argent à vous-même.' });
@@ -301,7 +320,6 @@ export const transfer = async (req: Request, res: Response) => {
     res.status(500).json({ error: 'Erreur serveur lors du transfert.' });
   }
 };
-
 
 export const getBalance = async (req: Request, res: Response) => {
   const userId = req.user?.id;
