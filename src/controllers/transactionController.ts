@@ -185,7 +185,7 @@ export const withdraw = async (req: Request, res: Response) => {
   }
 };
 
-export const transfer = async (req: Request, res: Response)=> {
+export const transfer = async (req: Request, res: Response) => {
   const senderId = req.user?.id;
   const { recipientUsername, amount } = req.body;
   const transferFee = 0.57;
@@ -199,19 +199,54 @@ export const transfer = async (req: Request, res: Response)=> {
     try {
       await client.query('BEGIN');
 
+      // 1. Cherche le membre avec ce contact (email/tel)
+      const memberRes = await client.query(
+        'SELECT id FROM members WHERE contact = $1',
+        [recipientUsername]
+      );
+      if (memberRes.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Destinataire introuvable.' });
+      }
+      const memberId = memberRes.rows[0].id;
+
+      // 2. Cherche le user rattaché à ce membre
+      const recipientUserRes = await client.query(
+        'SELECT id, full_name FROM users WHERE member_id = $1',
+        [memberId]
+      );
+      if (recipientUserRes.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Aucun utilisateur lié à ce membre.' });
+      }
+      const recipientId = recipientUserRes.rows[0].id;
+      const recipientFullName = recipientUserRes.rows[0].full_name;
+
+      // (Sécurité) Empêche l'auto-transfert
+      const senderUserRes = await client.query(
+        'SELECT full_name FROM users WHERE id = $1',
+        [senderId]
+      );
+      const senderFullName = senderUserRes.rows[0]?.full_name;
+      if (recipientFullName && senderFullName && recipientFullName === senderFullName) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'Vous ne pouvez pas envoyer de l’argent à vous-même.' });
+      }
+
+      // Limite hebdomadaire
       const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
       const weeklyTotalResult = await client.query(
         `SELECT SUM(amount) as total FROM transactions
          WHERE user_id = $1 AND type = 'transfer' AND created_at >= $2`,
         [senderId, weekAgo]
       );
-
       const weeklyTotal = parseFloat(weeklyTotalResult.rows[0]?.total || '0');
       if (weeklyTotal + amount > 100000) {
         await client.query('ROLLBACK');
         return res.status(400).json({ error: 'Limite hebdomadaire de 100 000 HTG dépassée.' });
       }
 
+      // Vérifie la balance du sender
       const senderBalanceRes = await client.query(
         'SELECT balance FROM balances WHERE user_id = $1 FOR UPDATE',
         [senderId]
@@ -222,32 +257,26 @@ export const transfer = async (req: Request, res: Response)=> {
         return res.status(400).json({ error: 'Fonds insuffisants (incluant les frais).' });
       }
 
-      const recipientRes = await client.query(
-        'SELECT id FROM users WHERE username = $1',
-        [recipientUsername]
-      );
-      if (recipientRes.rows.length === 0) {
-        await client.query('ROLLBACK');
-        return res.status(404).json({ error: 'Destinataire introuvable.' });
-      }
-      const recipientId = recipientRes.rows[0].id;
-
+      // Met à jour la balance du sender
       await client.query(
         'UPDATE balances SET balance = balance - $1 WHERE user_id = $2',
         [amount + transferFee, senderId]
       );
 
+      // Met à jour la balance du destinataire
       await client.query(
         'UPDATE balances SET balance = balance + $1 WHERE user_id = $2',
         [amount, recipientId]
       );
 
+      // Insère la transaction principale (transfert)
       await client.query(
-        `INSERT INTO transactions (id, user_id, type, amount, currency, recipient_id, source, status, created_at)
-         VALUES ($1, $2, 'transfer', $3, 'HTG', $4, 'app', 'completed', NOW())`,
-        [uuidv4(), senderId, amount, recipientId]
+        `INSERT INTO transactions (id, user_id, type, amount, currency, recipient_id, member_id, source, status, created_at)
+         VALUES ($1, $2, 'transfer', $3, 'HTG', $4, $5, 'app', 'completed', NOW())`,
+        [uuidv4(), senderId, amount, recipientId, memberId]
       );
 
+      // Ajoute les frais au compte admin
       const adminId = process.env.ADMIN_USER_ID || 'admin-id-123';
       await client.query(
         `UPDATE balances SET balance = balance + $1 WHERE user_id = $2`,
@@ -272,6 +301,7 @@ export const transfer = async (req: Request, res: Response)=> {
     res.status(500).json({ error: 'Erreur serveur lors du transfert.' });
   }
 };
+
 
 export const getBalance = async (req: Request, res: Response) => {
   const userId = req.user?.id;
@@ -315,33 +345,41 @@ export const requestMoney = async (req: Request, res: Response) => {
     try {
       await client.query('BEGIN');
 
-      // Vérifie que le destinataire existe
-      const recipientRes = await client.query(
-        'SELECT id FROM users WHERE username = $1',
+      // Trouve le membre à partir du contact
+      const memberRes = await client.query(
+        'SELECT id FROM members WHERE contact = $1',
         [recipientUsername]
       );
-
-      if (recipientRes.rows.length === 0) {
+      if (memberRes.rows.length === 0) {
         await client.query('ROLLBACK');
-        return res.status(404).json({ error: 'Destinataire introuvable.' });
+        return res.status(404).json({ error: 'Destinataire introuvable ou non inscrit.' });
       }
+      const memberId = memberRes.rows[0].id;
 
-      const recipientId = recipientRes.rows[0].id;
-
-      // Vérifie que le destinataire est membre
-      const memberCheck = await client.query(
-        `SELECT id FROM members WHERE contact = $1`,
-        [recipientUsername]
+      // Trouve le user rattaché à ce member_id
+      const recipientUserRes = await client.query(
+        'SELECT id, full_name FROM users WHERE member_id = $1',
+        [memberId]
       );
-
-      if (memberCheck.rows.length === 0) {
+      if (recipientUserRes.rows.length === 0) {
         await client.query('ROLLBACK');
-        return res.status(403).json({ error: 'Ce destinataire n’est pas encore membre Cash Hay.' });
+        return res.status(404).json({ error: 'Aucun utilisateur lié à ce membre.' });
+      }
+      const recipientId = recipientUserRes.rows[0].id;
+      const recipientFullName = recipientUserRes.rows[0].full_name;
+
+      // Protection : empêche de se demander de l’argent à soi-même
+      const requesterUserRes = await client.query(
+        'SELECT full_name FROM users WHERE id = $1',
+        [requesterId]
+      );
+      const requesterFullName = requesterUserRes.rows[0]?.full_name;
+      if (recipientFullName && requesterFullName && recipientFullName === requesterFullName) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'Impossible de vous faire une demande à vous-même.' });
       }
 
-      const memberId = memberCheck.rows[0].id;
-
-      // Enregistrement de la demande dans la table transactions
+      // Enregistrement de la demande
       await client.query(
         `INSERT INTO transactions (id, user_id, type, amount, currency, recipient_id, member_id, source, status, created_at)
          VALUES ($1, $2, 'request', $3, 'HTG', $4, $5, 'app', 'pending', NOW())`,
@@ -363,6 +401,7 @@ export const requestMoney = async (req: Request, res: Response) => {
   }
 };
 
+
 export const acceptRequest = async (req: Request, res: Response) => {
   const payerId = req.user?.id;
   const { transactionId } = req.body;
@@ -377,20 +416,18 @@ export const acceptRequest = async (req: Request, res: Response) => {
     try {
       await client.query('BEGIN');
 
-      // Récupère la demande
+      // 1. Récupère la transaction de demande
       const txRes = await client.query(
         `SELECT * FROM transactions WHERE id = $1 AND type = 'request' AND status = 'pending'`,
         [transactionId]
       );
-
       if (txRes.rows.length === 0) {
         await client.query('ROLLBACK');
         return res.status(404).json({ error: 'Demande introuvable ou déjà traitée.' });
       }
-
       const requestTx = txRes.rows[0];
 
-      // Vérifie que c’est bien le destinataire qui accepte
+      // 2. Vérifie que c'est bien le destinataire (celui qui reçoit la demande) qui accepte
       if (requestTx.recipient_id !== payerId) {
         await client.query('ROLLBACK');
         return res.status(403).json({ error: 'Non autorisé à accepter cette demande.' });
@@ -399,37 +436,36 @@ export const acceptRequest = async (req: Request, res: Response) => {
       const amount = parseFloat(requestTx.amount);
       const requesterId = requestTx.user_id;
 
-      // Vérifie le solde du payeur
+      // 3. Vérifie le solde du payeur
       const balanceRes = await client.query(
         'SELECT balance FROM balances WHERE user_id = $1 FOR UPDATE',
         [payerId]
       );
       const payerBalance = parseFloat(balanceRes.rows[0]?.balance || '0');
-
       if (payerBalance < amount + transferFee) {
         await client.query('ROLLBACK');
         return res.status(400).json({ error: 'Fonds insuffisants pour accepter la demande.' });
       }
 
-      // Débit du payeur
+      // 4. Débit payeur (avec frais)
       await client.query(
         `UPDATE balances SET balance = balance - $1 WHERE user_id = $2`,
         [amount + transferFee, payerId]
       );
 
-      // Crédit du demandeur
+      // 5. Crédit demandeur (receveur)
       await client.query(
         `UPDATE balances SET balance = balance + $1 WHERE user_id = $2`,
         [amount, requesterId]
       );
 
-      // Mise à jour de la demande initiale
+      // 6. Mise à jour de la demande (completed)
       await client.query(
         `UPDATE transactions SET status = 'completed', updated_at = NOW() WHERE id = $1`,
         [transactionId]
       );
 
-      // Enregistrement d’un nouveau transfert (acceptation)
+      // 7. Log du transfert effectif (trace)
       await client.query(
         `INSERT INTO transactions (id, user_id, type, amount, currency, recipient_id, member_id, source, status, description, created_at)
          VALUES ($1, $2, 'transfer', $3, 'HTG', $4, $5, 'app', 'completed', 'Paiement suite à une demande', NOW())`,
@@ -442,7 +478,7 @@ export const acceptRequest = async (req: Request, res: Response) => {
         ]
       );
 
-      // Frais vers admin
+      // 8. Frais vers l’admin
       const adminId = process.env.ADMIN_USER_ID || 'admin-id-123';
       await client.query(
         `UPDATE balances SET balance = balance + $1 WHERE user_id = $2`,
