@@ -583,28 +583,44 @@ export const cancelRequest = async (req: Request, res: Response) => {
 
 export const getRequests = async (req: Request, res: Response) => {
   const userId = req.user?.id;
-  const { direction } = req.query; // direction = 'sent' ou 'received'
+  const { transactionId } = req.body; // 'sent' ou 'received'
 
-  if (!['sent', 'received'].includes(direction as string)) {
+  if (!['sent', 'received'].includes(transactionId as string)) {
     return res.status(400).json({ error: "Paramètre 'direction' invalide. Utilisez 'sent' ou 'received'." });
   }
 
-  const field = direction === 'sent' ? 'user_id' : 'recipient_id';
-
   try {
-    const result = await pool.query(
-      `
-      SELECT t.id, t.amount, t.currency, t.status, t.created_at,
-             u.username AS other_party_username,
-             u.profile_image AS other_party_image,
-             t.description
-      FROM transactions t
-      JOIN users u ON u.id = (CASE WHEN $1 = 'user_id' THEN t.recipient_id ELSE t.user_id END)
-      WHERE t.type = 'request' AND t.${field} = $2
-      ORDER BY t.created_at DESC
-      `,
-      [field, userId]
-    );
+    let query = '';
+    let params: any[] = [];
+
+    if (transactionId === 'sent') {
+      query = `
+        SELECT t.id, t.amount, t.currency, t.status, t.created_at,
+               u.username AS other_party_username,
+               u.profile_image AS other_party_image,
+               t.description
+        FROM transactions t
+        JOIN users u ON u.id = t.recipient_id
+        WHERE t.type = 'request' AND t.user_id = $1
+        ORDER BY t.created_at DESC
+      `;
+      params = [userId];
+    } else {
+      // direction === 'received'
+      query = `
+        SELECT t.id, t.amount, t.currency, t.status, t.created_at,
+               u.username AS other_party_username,
+               u.profile_image AS other_party_image,
+               t.description
+        FROM transactions t
+        JOIN users u ON u.id = t.user_id
+        WHERE t.type = 'request' AND t.recipient_id = $1
+        ORDER BY t.created_at DESC
+      `;
+      params = [userId];
+    }
+
+    const result = await pool.query(query, params);
 
     return res.status(200).json({ requests: result.rows });
   } catch (error) {
@@ -612,6 +628,7 @@ export const getRequests = async (req: Request, res: Response) => {
     return res.status(500).json({ error: 'Erreur serveur lors de la récupération des demandes.' });
   }
 };
+
 
 export const getMonthlyStatement = async (req: Request, res: Response) => {
   const userId = req.user?.id;
