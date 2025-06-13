@@ -404,31 +404,41 @@ export const requestMoney = async (req: Request, res: Response) => {
       const memberId = memberRes.rows[0].id;
 
       // Trouve le user rattaché à ce member_id
-      const recipientUserRes = await client.query(
-        'SELECT id, first_name,last_name FROM users WHERE member_id = $1',
-        [memberId]
-      );
-      console.log('🔎 Résultat SELECT users:', recipientUserRes.rows);
+    const recipientUserRes = await client.query(
+  'SELECT id, first_name, last_name FROM users WHERE member_id = $1',
+  [memberId]
+);
+console.log('🔎 Résultat SELECT users:', recipientUserRes.rows);
 
-      if (recipientUserRes.rows.length === 0) {
-        await client.query('ROLLBACK');
-        console.log('⛔ Aucun utilisateur lié à ce membre:', memberId);
-        return res.status(404).json({ error: 'Aucun utilisateur lié à ce membre.' });
-      }
-      const recipientId = recipientUserRes.rows[0].id;
-      const recipientFullName = recipientUserRes.rows[0].full_name;
+if (recipientUserRes.rows.length === 0) {
+  await client.query('ROLLBACK');
+  console.log('⛔ Aucun utilisateur lié à ce membre:', memberId);
+  return res.status(404).json({ error: 'Aucun utilisateur lié à ce membre.' });
+}
+const recipientId = recipientUserRes.rows[0].id;
+const recipientFirstName = recipientUserRes.rows[0].first_name;
+const recipientLastName = recipientUserRes.rows[0].last_name;
+const recipientFullName = `${recipientFirstName || ''} ${recipientLastName || ''}`.trim();
 
-      // Protection : empêche de se demander de l’argent à soi-même
-      const requesterUserRes = await client.query(
-        'SELECT full_name FROM users WHERE id = $1',
-        [requesterId]
-      );
-      const requesterFullName = requesterUserRes.rows[0]?.full_name;
-      if (recipientFullName && requesterFullName && recipientFullName === requesterFullName) {
-        await client.query('ROLLBACK');
-        console.log('⛔ Tentative d’auto-demande :', recipientFullName);
-        return res.status(400).json({ error: 'Impossible de vous faire une demande à vous-même.' });
-      }
+// Protection : empêche de se demander de l’argent à soi-même
+const requesterUserRes = await client.query(
+  'SELECT first_name, last_name FROM users WHERE id = $1',
+  [requesterId]
+);
+const requesterFirstName = requesterUserRes.rows[0]?.first_name;
+const requesterLastName = requesterUserRes.rows[0]?.last_name;
+const requesterFullName = `${requesterFirstName || ''} ${requesterLastName || ''}`.trim();
+
+if (
+  recipientFullName &&
+  requesterFullName &&
+  recipientFullName.toLowerCase() === requesterFullName.toLowerCase()
+) {
+  await client.query('ROLLBACK');
+  console.log('⛔ Tentative d’auto-demande :', recipientFullName);
+  return res.status(400).json({ error: 'Impossible de vous faire une demande à vous-même.' });
+}
+
 
       // Enregistrement de la demande
       await client.query(
