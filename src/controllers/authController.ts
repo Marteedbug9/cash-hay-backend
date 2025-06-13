@@ -884,3 +884,11 @@ export const checkMember = async (req: Request, res: Response) => {
   }
 };
 
+
+export const savePushToken = async (req: Request, res: Response) => {
+  const userId = req.user?.id;
+  const { pushToken } = req.body;
+  if (!pushToken) return res.status(400).json({ error: 'Token manquant.' });
+  await pool.query('UPDATE users SET expo_push_token = $1 WHERE id = $2', [pushToken, userId]);
+  res.json({ success: true });
+};

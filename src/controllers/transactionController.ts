@@ -3,6 +3,7 @@ import { Request, Response } from 'express';
 import pool from '../config/db';
 import { v4 as uuidv4 } from 'uuid';
 import PDFDocument from 'pdfkit';
+import { sendPushNotification, sendEmail, sendSMS } from '../utils/notificationUtils';
 
 
 export const getTransactions = async (req: Request, res: Response) => {
@@ -29,7 +30,7 @@ export const createTransaction = async (req: Request, res: Response) => {
     amount,
     currency = 'HTG',
     description,
-    recipient_id, // uuid de l’utilisateur cible
+    recipient_id,
     source = 'manual'
   } = req.body;
 
@@ -43,12 +44,10 @@ export const createTransaction = async (req: Request, res: Response) => {
       if (!recipient_id) {
         return res.status(400).json({ error: 'recipient_id requis pour un transfert.' });
       }
-
       const checkRecipient = await pool.query(
         `SELECT id FROM users WHERE id = $1`,
         [recipient_id]
       );
-
       if (checkRecipient.rowCount === 0) {
         return res.status(404).json({ error: 'Bénéficiaire introuvable.' });
       }
@@ -74,25 +73,35 @@ export const createTransaction = async (req: Request, res: Response) => {
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
-
         // Débit expéditeur
         await client.query(
           `UPDATE balances SET balance = balance - $1 WHERE user_id = $2`,
           [amount, userId]
         );
-
         // Crédit bénéficiaire
         await client.query(
           `UPDATE balances SET balance = balance + $1 WHERE user_id = $2`,
           [amount, recipient_id]
         );
-
         await client.query('COMMIT');
       } catch (txErr) {
         await client.query('ROLLBACK');
         throw txErr;
       } finally {
         client.release();
+      }
+    }
+
+    // Notification par email seulement
+    if (type === 'transfer' && recipient_id) {
+      try {
+        const destRes = await pool.query('SELECT email FROM users WHERE id = $1', [recipient_id]);
+        const email = destRes.rows[0]?.email;
+        if (email) {
+          await sendEmail({ to: email, subject: "Transfert reçu - Cash Hay", text: `Vous avez reçu ${amount} HTG.` });
+        }
+      } catch (e) {
+        console.log("Notification transfer: catch", e);
       }
     }
 
@@ -115,21 +124,28 @@ export const deposit = async (req: Request, res: Response) => {
     const client = await pool.connect();
     await client.query('BEGIN');
 
-    // ➔ Mise à jour du solde
     await client.query(
       `UPDATE balances SET balance = balance + $1, updated_at = NOW() WHERE user_id = $2`,
       [amount, userId]
     );
-
-    // ➔ Insertion de la transaction
     await client.query(
       `INSERT INTO transactions (id, user_id, type, amount, currency, source, status, created_at)
        VALUES ($1, $2, 'deposit', $3, $4, $5, 'completed', NOW())`,
       [uuidv4(), userId, amount, currency, source]
     );
-
     await client.query('COMMIT');
     client.release();
+
+    // Notification email après dépôt
+    try {
+      const userRes = await pool.query('SELECT email FROM users WHERE id = $1', [userId]);
+      const email = userRes.rows[0]?.email;
+      if (email) {
+        await sendEmail({ to: email, subject: "Dépôt confirmé - Cash Hay", text: `Votre dépôt de ${amount} HTG est crédité sur votre compte.` });
+      }
+    } catch (notifErr) {
+      console.error("Erreur notif dépôt:", notifErr);
+    }
 
     res.status(200).json({ message: 'Dépôt effectué avec succès.', amount });
   } catch (error: any) {
@@ -150,33 +166,38 @@ export const withdraw = async (req: Request, res: Response) => {
     const client = await pool.connect();
     await client.query('BEGIN');
 
-    // Vérifie le solde avant de retirer
     const balanceResult = await client.query(
       `SELECT balance FROM balances WHERE user_id = $1`,
       [userId]
     );
-
     const currentBalance = balanceResult.rows[0]?.balance || 0;
     if (currentBalance < amount) {
       client.release();
       return res.status(400).json({ error: 'Fonds insuffisants.' });
     }
 
-    // Mise à jour du solde
     await client.query(
       `UPDATE balances SET balance = balance - $1, updated_at = NOW() WHERE user_id = $2`,
       [amount, userId]
     );
-
-    // Insertion de la transaction
     await client.query(
       `INSERT INTO transactions (id, user_id, type, amount, currency, source, status, created_at)
        VALUES ($1, $2, 'withdraw', $3, $4, $5, 'completed', NOW())`,
       [uuidv4(), userId, amount, currency, source]
     );
-
     await client.query('COMMIT');
     client.release();
+
+    // Notification email après retrait
+    try {
+      const userRes = await pool.query('SELECT email FROM users WHERE id = $1', [userId]);
+      const email = userRes.rows[0]?.email;
+      if (email) {
+        await sendEmail({ to: email, subject: "Retrait effectué - Cash Hay", text: `Vous avez retiré ${amount} HTG de votre compte.` });
+      }
+    } catch (notifErr) {
+      console.error("Erreur notif retrait:", notifErr);
+    }
 
     res.status(200).json({ message: 'Retrait effectué avec succès.', amount });
   } catch (error: any) {
@@ -330,19 +351,29 @@ export const transfer = async (req: Request, res: Response) => {
       await client.query('COMMIT');
       console.log('✅ Transfert effectué avec succès !');
       res.status(200).json({ message: 'Transfert effectué avec succès.' });
+    // EMAIL DESTINATAIRE
+      const recipientRes = await pool.query('SELECT email FROM users WHERE id = $1', [recipientId]);
+      const recipientEmail = recipientRes.rows[0]?.email;
+      if (recipientEmail) {
+        await sendEmail({
+          to: recipientEmail,
+          subject: 'Transfert reçu - Cash Hay',
+          text: `Vous avez reçu ${amount} HTG via Cash Hay.`
+        });
+      }
+
+      return res.status(200).json({ message: 'Transfert effectué avec succès.' });
+
     } catch (error) {
       await client.query('ROLLBACK');
-      console.error('❌ ERROR in try block:', error);
       throw error;
     } finally {
       client.release();
     }
   } catch (err) {
-    console.error('❌ Erreur transfer:', err);
-    res.status(500).json({ error: 'Erreur serveur lors du transfert.' });
+    return res.status(500).json({ error: 'Erreur serveur lors du transfert.' });
   }
 };
-
 
 export const getBalance = async (req: Request, res: Response) => {
   const userId = req.user?.id;
@@ -451,19 +482,29 @@ if (
       console.log('✅ Demande d’argent enregistrée', { requesterId, recipientId, amount });
       res.status(200).json({ message: 'Demande d’argent enregistrée avec succès.' });
 
+     // EMAIL destinataire de la demande
+      const recipientRes = await pool.query('SELECT email FROM users WHERE id = $1', [recipientId]);
+      const email = recipientRes.rows[0]?.email;
+      if (email) {
+        await sendEmail({
+          to: email,
+          subject: "Demande d’argent Cash Hay",
+          text: `Vous avez reçu une demande d’argent de ${amount} HTG sur Cash Hay.`
+        });
+      }
+
+      return res.status(200).json({ message: 'Demande d’argent enregistrée avec succès.' });
+
     } catch (error) {
       await client.query('ROLLBACK');
-      console.error('❌ Erreur transaction SQL:', error);
       throw error;
     } finally {
       client.release();
     }
   } catch (err) {
-    console.error('❌ Erreur requestMoney (catch global):', err);
-    res.status(500).json({ error: 'Erreur serveur lors de la demande.' });
+    return res.status(500).json({ error: 'Erreur serveur lors de la demande.' });
   }
 };
-
 
 
 export const acceptRequest = async (req: Request, res: Response) => {
@@ -556,6 +597,18 @@ export const acceptRequest = async (req: Request, res: Response) => {
 
       await client.query('COMMIT');
       res.status(200).json({ message: 'Demande acceptée avec succès.' });
+   const requesterRes = await pool.query('SELECT email FROM users WHERE id = $1', [requesterId]);
+      const email = requesterRes.rows[0]?.email;
+      if (email) {
+        await sendEmail({
+          to: email,
+          subject: "Demande acceptée - Cash Hay",
+          text: `Votre demande d’argent de ${amount} HTG a été acceptée sur Cash Hay.`
+        });
+      }
+
+      return res.status(200).json({ message: 'Demande acceptée avec succès.' });
+
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;
@@ -563,8 +616,7 @@ export const acceptRequest = async (req: Request, res: Response) => {
       client.release();
     }
   } catch (err) {
-    console.error('❌ Erreur acceptRequest :', err);
-    res.status(500).json({ error: 'Erreur serveur lors de l’acceptation.' });
+    return res.status(500).json({ error: 'Erreur serveur lors de l’acceptation.' });
   }
 };
 

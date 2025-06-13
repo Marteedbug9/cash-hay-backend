@@ -14,6 +14,7 @@ import {
   verifyOTPRegister,
   sendOTPRegister,
   checkMember,
+  savePushToken,
   searchUserByContact
 } from '../controllers/authController';
 import upload from '../middlewares/upload';
@@ -54,6 +55,7 @@ router.post('/send-otp-register', sendOTPRegister);
 router.post('/verify-otp-register', verifyOTPRegister);
 router.post('/check-member', verifyToken, checkMember);
 
+router.post('/push-token', verifyToken, savePushToken);
 
 
 // Confirmation tentative suspecte
