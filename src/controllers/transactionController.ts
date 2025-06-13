@@ -435,41 +435,40 @@ export const requestMoney = async (req: Request, res: Response) => {
       const memberId = memberRes.rows[0].id;
 
       // Trouve le user rattaché à ce member_id
-    const recipientUserRes = await client.query(
-  'SELECT id, first_name, last_name FROM users WHERE member_id = $1',
-  [memberId]
-);
-console.log('🔎 Résultat SELECT users:', recipientUserRes.rows);
+      const recipientUserRes = await client.query(
+        'SELECT id, first_name, last_name FROM users WHERE member_id = $1',
+        [memberId]
+      );
+      console.log('🔎 Résultat SELECT users:', recipientUserRes.rows);
 
-if (recipientUserRes.rows.length === 0) {
-  await client.query('ROLLBACK');
-  console.log('⛔ Aucun utilisateur lié à ce membre:', memberId);
-  return res.status(404).json({ error: 'Aucun utilisateur lié à ce membre.' });
-}
-const recipientId = recipientUserRes.rows[0].id;
-const recipientFirstName = recipientUserRes.rows[0].first_name;
-const recipientLastName = recipientUserRes.rows[0].last_name;
-const recipientFullName = `${recipientFirstName || ''} ${recipientLastName || ''}`.trim();
+      if (recipientUserRes.rows.length === 0) {
+        await client.query('ROLLBACK');
+        console.log('⛔ Aucun utilisateur lié à ce membre:', memberId);
+        return res.status(404).json({ error: 'Aucun utilisateur lié à ce membre.' });
+      }
+      const recipientId = recipientUserRes.rows[0].id;
+      const recipientFirstName = recipientUserRes.rows[0].first_name;
+      const recipientLastName = recipientUserRes.rows[0].last_name;
+      const recipientFullName = `${recipientFirstName || ''} ${recipientLastName || ''}`.trim();
 
-// Protection : empêche de se demander de l’argent à soi-même
-const requesterUserRes = await client.query(
-  'SELECT first_name, last_name FROM users WHERE id = $1',
-  [requesterId]
-);
-const requesterFirstName = requesterUserRes.rows[0]?.first_name;
-const requesterLastName = requesterUserRes.rows[0]?.last_name;
-const requesterFullName = `${requesterFirstName || ''} ${requesterLastName || ''}`.trim();
+      // Protection : empêche de se demander de l’argent à soi-même
+      const requesterUserRes = await client.query(
+        'SELECT first_name, last_name FROM users WHERE id = $1',
+        [requesterId]
+      );
+      const requesterFirstName = requesterUserRes.rows[0]?.first_name;
+      const requesterLastName = requesterUserRes.rows[0]?.last_name;
+      const requesterFullName = `${requesterFirstName || ''} ${requesterLastName || ''}`.trim();
 
-if (
-  recipientFullName &&
-  requesterFullName &&
-  recipientFullName.toLowerCase() === requesterFullName.toLowerCase()
-) {
-  await client.query('ROLLBACK');
-  console.log('⛔ Tentative d’auto-demande :', recipientFullName);
-  return res.status(400).json({ error: 'Impossible de vous faire une demande à vous-même.' });
-}
-
+      if (
+        recipientFullName &&
+        requesterFullName &&
+        recipientFullName.toLowerCase() === requesterFullName.toLowerCase()
+      ) {
+        await client.query('ROLLBACK');
+        console.log('⛔ Tentative d’auto-demande :', recipientFullName);
+        return res.status(400).json({ error: 'Impossible de vous faire une demande à vous-même.' });
+      }
 
       // Enregistrement de la demande
       await client.query(
@@ -480,19 +479,24 @@ if (
 
       await client.query('COMMIT');
       console.log('✅ Demande d’argent enregistrée', { requesterId, recipientId, amount });
-      res.status(200).json({ message: 'Demande d’argent enregistrée avec succès.' });
 
-     // EMAIL destinataire de la demande
-      const recipientRes = await pool.query('SELECT email FROM users WHERE id = $1', [recipientId]);
-      const email = recipientRes.rows[0]?.email;
-      if (email) {
-        await sendEmail({
-          to: email,
-          subject: "Demande d’argent Cash Hay",
-          text: `Vous avez reçu une demande d’argent de ${amount} HTG sur Cash Hay.`
+      // EMAIL destinataire de la demande (en asynchrone, après la réponse)
+      pool.query('SELECT email FROM users WHERE id = $1', [recipientId])
+        .then(recipientRes => {
+          const email = recipientRes.rows[0]?.email;
+          if (email) {
+            return sendEmail({
+              to: email,
+              subject: "Demande d’argent Cash Hay",
+              text: `Vous avez reçu une demande d’argent de ${amount} HTG sur Cash Hay.`
+            });
+          }
+        })
+        .catch(notifErr => {
+          console.error('Erreur notification request:', notifErr);
         });
-      }
 
+      // Envoi une SEULE réponse !
       return res.status(200).json({ message: 'Demande d’argent enregistrée avec succès.' });
 
     } catch (error) {
@@ -505,6 +509,7 @@ if (
     return res.status(500).json({ error: 'Erreur serveur lors de la demande.' });
   }
 };
+
 
 
 export const acceptRequest = async (req: Request, res: Response) => {
