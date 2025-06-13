@@ -4,6 +4,7 @@ import pool from '../config/db';
 import { v4 as uuidv4 } from 'uuid';
 import PDFDocument from 'pdfkit';
 import { sendPushNotification, sendEmail, sendSMS } from '../utils/notificationUtils';
+import { addNotification } from './notificationsController'; 
 
 
 export const getTransactions = async (req: Request, res: Response) => {
@@ -211,10 +212,7 @@ export const transfer = async (req: Request, res: Response) => {
   const { recipientUsername, amount } = req.body;
   const transferFee = 0.57;
 
-  console.log('➡️ Transfer called. Sender:', senderId, 'Recipient:', recipientUsername, 'Amount:', amount);
-
   if (!recipientUsername || !amount || isNaN(amount) || amount <= 0) {
-    console.log('❌ Données invalides:', { recipientUsername, amount });
     return res.status(400).json({ error: 'Données invalides.' });
   }
 
@@ -223,67 +221,53 @@ export const transfer = async (req: Request, res: Response) => {
     try {
       await client.query('BEGIN');
 
-      // 1. Cherche le membre avec ce contact (email/tel)
+      // Recherche du membre (par email/tel)
       const cleanedRecipient = recipientUsername.trim().toLowerCase();
       const isEmail = cleanedRecipient.includes('@');
       let memberRes;
 
       if (isEmail) {
-        console.log('🔎 Recherche membre par EMAIL:', cleanedRecipient);
         memberRes = await client.query(
           'SELECT id, contact FROM members WHERE LOWER(contact) = $1',
           [cleanedRecipient]
         );
       } else {
-        // Pour téléphone, match sur version nettoyée et/ou 8 derniers chiffres
         const onlyDigits = cleanedRecipient.replace(/\D/g, '');
-        console.log('🔎 Recherche membre par PHONE:', onlyDigits);
         memberRes = await client.query(
           `SELECT id, contact FROM members
-            WHERE
-              REPLACE(REPLACE(REPLACE(contact, '+', ''), ' ', ''), '-', '') = $1
-              OR RIGHT(REPLACE(REPLACE(REPLACE(contact, '+', ''), ' ', ''), '-', ''), 8) = $2`,
+           WHERE
+             REPLACE(REPLACE(REPLACE(contact, '+', ''), ' ', ''), '-', '') = $1
+             OR RIGHT(REPLACE(REPLACE(REPLACE(contact, '+', ''), ' ', ''), '-', ''), 8) = $2`,
           [onlyDigits, onlyDigits.slice(-8)]
         );
       }
-      console.log('🧩 memberRes:', memberRes.rows);
 
       if (!memberRes.rows.length) {
         await client.query('ROLLBACK');
-        console.log('❌ Destinataire introuvable');
         return res.status(404).json({ error: 'Destinataire introuvable.' });
       }
-
       const memberId = memberRes.rows[0].id;
 
-      // 2. Cherche le user rattaché à ce membre
+      // User associé au member
       const recipientUserRes = await client.query(
         'SELECT id, first_name, last_name FROM users WHERE member_id = $1',
         [memberId]
       );
-      console.log('🧑 recipientUserRes:', recipientUserRes.rows);
-
       if (recipientUserRes.rows.length === 0) {
         await client.query('ROLLBACK');
-        console.log('❌ Aucun utilisateur lié à ce membre.');
         return res.status(404).json({ error: 'Aucun utilisateur lié à ce membre.' });
       }
-
       const recipientId = recipientUserRes.rows[0].id;
       const recipientFullName = [recipientUserRes.rows[0].first_name, recipientUserRes.rows[0].last_name].join(' ');
 
-      // (Sécurité) Empêche l'auto-transfert
+      // Anti-auto-transfert
       const senderUserRes = await client.query(
         'SELECT first_name, last_name FROM users WHERE id = $1',
         [senderId]
       );
       const senderFullName = [senderUserRes.rows[0]?.first_name, senderUserRes.rows[0]?.last_name].join(' ');
-
-      console.log('🧑 Sender:', senderFullName, 'Recipient:', recipientFullName);
-
       if (recipientFullName && senderFullName && recipientFullName === senderFullName) {
         await client.query('ROLLBACK');
-        console.log('❌ Auto-transfert détecté');
         return res.status(400).json({ error: 'Vous ne pouvez pas envoyer de l’argent à vous-même.' });
       }
 
@@ -295,11 +279,8 @@ export const transfer = async (req: Request, res: Response) => {
         [senderId, weekAgo]
       );
       const weeklyTotal = parseFloat(weeklyTotalResult.rows[0]?.total || '0');
-      console.log('📅 Total hebdo:', weeklyTotal);
-
       if (weeklyTotal + amount > 100000) {
         await client.query('ROLLBACK');
-        console.log('❌ Limite hebdo dépassée');
         return res.status(400).json({ error: 'Limite hebdomadaire de 100 000 HTG dépassée.' });
       }
 
@@ -309,34 +290,39 @@ export const transfer = async (req: Request, res: Response) => {
         [senderId]
       );
       const senderBalance = parseFloat(senderBalanceRes.rows[0]?.balance || '0');
-      console.log('💸 Sender balance:', senderBalance);
-
       if (senderBalance < amount + transferFee) {
         await client.query('ROLLBACK');
-        console.log('❌ Fonds insuffisants');
         return res.status(400).json({ error: 'Fonds insuffisants (incluant les frais).' });
       }
 
-      // Met à jour la balance du sender
+      // Débit/crédit balances
       await client.query(
         'UPDATE balances SET balance = balance - $1 WHERE user_id = $2',
         [amount + transferFee, senderId]
       );
-
-      // Met à jour la balance du destinataire
       await client.query(
         'UPDATE balances SET balance = balance + $1 WHERE user_id = $2',
         [amount, recipientId]
       );
 
-      // Insère la transaction principale (transfert)
+      // Transaction principale
       await client.query(
         `INSERT INTO transactions (id, user_id, type, amount, currency, recipient_id, member_id, source, status, created_at)
          VALUES ($1, $2, 'transfer', $3, 'HTG', $4, $5, 'app', 'completed', NOW())`,
         [uuidv4(), senderId, amount, recipientId, memberId]
       );
 
-      // Ajoute les frais au compte admin
+      // Notification destinataire
+      await client.query(
+        `INSERT INTO notifications (
+          user_id, type, from_first_name, from_last_name, from_contact, from_profile_image, amount, status
+        )
+         SELECT $1, 'receive', u.first_name, u.last_name, u.username, u.photo_url, $2, 'completed'
+         FROM users u WHERE u.id = $3`,
+        [recipientId, amount, senderId]
+      );
+
+      // Frais vers admin
       const adminId = process.env.ADMIN_USER_ID || 'admin-id-123';
       await client.query(
         `UPDATE balances SET balance = balance + $1 WHERE user_id = $2`,
@@ -349,9 +335,8 @@ export const transfer = async (req: Request, res: Response) => {
       );
 
       await client.query('COMMIT');
-      console.log('✅ Transfert effectué avec succès !');
-      res.status(200).json({ message: 'Transfert effectué avec succès.' });
-    // EMAIL DESTINATAIRE
+
+      // Email destinataire
       const recipientRes = await pool.query('SELECT email FROM users WHERE id = $1', [recipientId]);
       const recipientEmail = recipientRes.rows[0]?.email;
       if (recipientEmail) {
@@ -477,6 +462,15 @@ export const requestMoney = async (req: Request, res: Response) => {
         [uuidv4(), requesterId, amount, recipientId, memberId]
       );
 
+      await client.query(
+  `INSERT INTO notifications (
+    user_id, type, from_first_name, from_last_name, from_contact, from_profile_image, amount, status
+  )
+   SELECT $1, 'request', u.first_name, u.last_name, u.username, u.photo_url, $2, 'pending'
+   FROM users u WHERE u.id = $3`,
+  [recipientId, amount, requesterId]
+);
+
       await client.query('COMMIT');
       console.log('✅ Demande d’argent enregistrée', { requesterId, recipientId, amount });
 
@@ -537,7 +531,7 @@ export const acceptRequest = async (req: Request, res: Response) => {
       }
       const requestTx = txRes.rows[0];
 
-      // 2. Vérifie que c'est bien le destinataire (celui qui reçoit la demande) qui accepte
+      // 2. Vérifie que c'est bien le destinataire qui accepte
       if (requestTx.recipient_id !== payerId) {
         await client.query('ROLLBACK');
         return res.status(403).json({ error: 'Non autorisé à accepter cette demande.' });
@@ -601,8 +595,9 @@ export const acceptRequest = async (req: Request, res: Response) => {
       );
 
       await client.query('COMMIT');
-      res.status(200).json({ message: 'Demande acceptée avec succès.' });
-   const requesterRes = await pool.query('SELECT email FROM users WHERE id = $1', [requesterId]);
+
+      // Récupère email du demandeur pour notification
+      const requesterRes = await pool.query('SELECT email FROM users WHERE id = $1', [requesterId]);
       const email = requesterRes.rows[0]?.email;
       if (email) {
         await sendEmail({
@@ -611,6 +606,18 @@ export const acceptRequest = async (req: Request, res: Response) => {
           text: `Votre demande d’argent de ${amount} HTG a été acceptée sur Cash Hay.`
         });
       }
+
+      // Ajoute une notification pour le demandeur (qui reçoit l’argent)
+      await addNotification({
+        user_id: requesterId,
+        type: 'receive',
+        from_first_name: req.user?.first_name || '',
+        from_last_name: req.user?.last_name || '',
+        from_contact: req.user?.email || req.user?.phone || '',
+        from_profile_image: req.user?.photo_url || '',
+        amount,
+        status: 'accepted'
+      });
 
       return res.status(200).json({ message: 'Demande acceptée avec succès.' });
 
@@ -653,6 +660,15 @@ export const cancelRequest = async (req: Request, res: Response) => {
       `UPDATE transactions SET status = 'cancelled', updated_at = NOW() WHERE id = $1`,
       [transactionId]
     );
+
+    await pool.query(
+  `INSERT INTO notifications (
+    user_id, type, from_first_name, from_last_name, from_contact, from_profile_image, amount, status
+  )
+   SELECT $1, 'cancel', u.first_name, u.last_name, u.username, u.photo_url, $2, 'cancelled'
+   FROM users u WHERE u.id = $3`,
+  [tx.recipient_id, tx.amount, userId]
+);
 
     res.status(200).json({ message: 'Demande annulée avec succès.' });
   } catch (error) {

@@ -9,6 +9,10 @@ declare global {
        username?: string; 
       role?: 'admin' | 'user';
       is_otp_verified?: boolean;
+      first_name?: string;   // Ajoute ici
+      last_name?: string;    // Ajoute ici
+      phone?: string;        // Ajoute ici
+      photo_url?: string;    // Ajoute ici
     }
 
     interface Request {

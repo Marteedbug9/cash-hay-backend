@@ -1,16 +1,11 @@
-import express from 'express';
-import {
-  listNotifications,
-  clearNotifications,
-} from '../controllers/notificationsController';
-import {verifyToken } from '../middlewares/verifyToken';
+import { Router } from 'express';
+import { listNotifications, clearNotifications, getNotifications } from '../controllers/notificationsController';
+import { verifyToken } from '../middlewares/verifyToken';
 
-const router = express.Router();
+const router = Router();
 
-// GET /api/notifications - Liste toutes les notifications de l'utilisateur connecté
-router.get('/', verifyToken, listNotifications);
-
-// DELETE /api/notifications - Vider toutes les notifications de l'utilisateur connecté
-router.delete('/', verifyToken, clearNotifications);
+router.get('/', verifyToken, listNotifications);       // GET /api/notifications
+router.delete('/', verifyToken, clearNotifications);   // DELETE /api/notifications
+router.get('/all', verifyToken, getNotifications);     // GET /api/notifications/all
 
 export default router;

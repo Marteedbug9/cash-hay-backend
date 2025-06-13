@@ -84,3 +84,17 @@ export const clearNotifications = async (req: Request, res: Response) => {
     res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
+
+
+export const getNotifications = async (req: Request, res: Response) => {
+  const userId = req.user?.id;
+  try {
+    const result = await pool.query(
+      `SELECT * FROM notifications WHERE user_id = $1 ORDER BY created_at DESC`,
+      [userId]
+    );
+    res.json({ notifications: result.rows });
+  } catch (err) {
+    res.status(500).json({ error: 'Erreur serveur.' });
+  }
+};
