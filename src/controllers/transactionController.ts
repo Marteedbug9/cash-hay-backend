@@ -405,7 +405,7 @@ export const requestMoney = async (req: Request, res: Response) => {
 
       // Trouve le user rattaché à ce member_id
       const recipientUserRes = await client.query(
-        'SELECT id, full_name FROM users WHERE member_id = $1',
+        'SELECT id, first_name,last_name FROM users WHERE member_id = $1',
         [memberId]
       );
       console.log('🔎 Résultat SELECT users:', recipientUserRes.rows);
