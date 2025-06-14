@@ -174,18 +174,21 @@ export const login = async (req: Request, res: Response) => {
   message: 'Connexion réussie',
   requiresOTP,
   token,
-  user: {
-    id: user.id,
-    username: user.username,
-    email: user.email,
-    phone: user.phone, // facultatif
-    full_name: `${user.first_name} ${user.last_name}`,
-    is_verified: user.is_verified || false,
-    verified_at: user.verified_at || null, // ✅ ajoute ceci
-    identity_verified: user.identity_verified || false, // 👈 ici
-    is_otp_verified: user.is_otp_verified || false, // 🔥 important
-    role: user.role || 'user',
-  }
+ user: {
+  id: user.id,
+  username: user.username,
+  email: user.email,
+  phone: user.phone,
+  first_name: user.first_name,
+  last_name: user.last_name,
+  photo_url: user.photo_url || null,
+  is_verified: user.is_verified || false,
+  verified_at: user.verified_at || null,
+  identity_verified: user.identity_verified || false,
+  is_otp_verified: user.is_otp_verified || false,
+  role: user.role || 'user',
+}
+
 });
 
   } catch (error: any) {
@@ -558,17 +561,20 @@ export const verifyOTP: RequestHandler = async (req: Request, res: Response)  =>
     return res.status(200).json({
   token,
   user: {
-    id: user.id,
-    username: user.username,
-    email: user.email,
-    phone: user.phone,
-    full_name: `${user.first_name} ${user.last_name}`,
-    is_verified: user.is_verified,
-    is_otp_verified: true,
-    identity_verified: user.identity_verified,
-    identity_request_enabled: user.identity_request_enabled, 
-    role: user.role,
-  },
+  id: user.id,
+  username: user.username,
+  email: user.email,
+  phone: user.phone,
+  first_name: user.first_name,
+  last_name: user.last_name,
+  photo_url: user.photo_url || null,
+  is_verified: user.is_verified || false,
+  is_otp_verified: true,
+  identity_verified: user.identity_verified || false,
+  identity_request_enabled: user.identity_request_enabled ?? true,
+  role: user.role || 'user',
+}
+
 });
 
   } catch (err: any) {
@@ -626,12 +632,22 @@ export const uploadProfileImage = async (req: Request, res: Response) => {
 
     const result = await uploadFromBuffer(file.buffer);
 
-    await pool.query('UPDATE users SET profile_image = $1 WHERE id = $2', [
+    // ✅ Mise à jour de la photo de profil dans la colonne correcte
+    await pool.query('UPDATE users SET photo_url = $1 WHERE id = $2', [
       result.secure_url,
       userId,
     ]);
 
-    res.status(200).json({ imageUrl: result.secure_url });
+    // ✅ Renvoyer le profil à jour
+    const updatedUser = await pool.query(
+      'SELECT id, first_name, last_name, photo_url FROM users WHERE id = $1',
+      [userId]
+    );
+
+    res.status(200).json({
+      message: 'Image de profil mise à jour avec succès',
+      user: updatedUser.rows[0],
+    });
   } catch (err) {
     console.error('❌ Erreur upload image :', err);
     res.status(500).json({ error: 'Erreur serveur' });
