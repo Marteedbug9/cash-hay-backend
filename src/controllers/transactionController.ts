@@ -507,235 +507,86 @@ export const requestMoney = async (req: Request, res: Response) => {
 
 
 export const acceptRequest = async (req: Request, res: Response) => {
-  const payerId = req.user?.id;
-  const { transactionId } = req.body;
-  const transferFee = 0.57;
-
-  if (!transactionId) {
-    return res.status(400).json({ error: 'ID de la demande requis.' });
-  }
+  const userId = req.user?.id;
+  const { id } = req.params; // ID de la notification
 
   try {
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
+    // 🔍 Récupérer la notification
+    const notifRes = await pool.query(
+      `SELECT * FROM notifications WHERE id = $1 AND user_id = $2 AND status = 'pending'`,
+      [id, userId]
+    );
+    const notification = notifRes.rows[0];
 
-      // 1. Récupère la transaction de demande
-      const txRes = await client.query(
-        `SELECT * FROM transactions WHERE id = $1 AND type = 'request' AND status = 'pending'`,
-        [transactionId]
-      );
-      if (txRes.rows.length === 0) {
-        await client.query('ROLLBACK');
-        return res.status(404).json({ error: 'Demande introuvable ou déjà traitée.' });
-      }
-      const requestTx = txRes.rows[0];
-
-      // 2. Vérifie que c'est bien le destinataire qui accepte
-      if (requestTx.recipient_id !== payerId) {
-        await client.query('ROLLBACK');
-        return res.status(403).json({ error: 'Non autorisé à accepter cette demande.' });
-      }
-
-      const amount = parseFloat(requestTx.amount);
-      const requesterId = requestTx.user_id;
-
-      // 3. Vérifie le solde du payeur
-      const balanceRes = await client.query(
-        'SELECT balance FROM balances WHERE user_id = $1 FOR UPDATE',
-        [payerId]
-      );
-      const payerBalance = parseFloat(balanceRes.rows[0]?.balance || '0');
-      if (payerBalance < amount + transferFee) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({ error: 'Fonds insuffisants pour accepter la demande.' });
-      }
-
-      // 4. Débit payeur (avec frais)
-      await client.query(
-        `UPDATE balances SET balance = balance - $1 WHERE user_id = $2`,
-        [amount + transferFee, payerId]
-      );
-
-      // 5. Crédit demandeur (receveur)
-      await client.query(
-        `UPDATE balances SET balance = balance + $1 WHERE user_id = $2`,
-        [amount, requesterId]
-      );
-
-      // 6. Mise à jour de la demande (completed)
-      await client.query(
-        `UPDATE transactions SET status = 'completed', updated_at = NOW() WHERE id = $1`,
-        [transactionId]
-      );
-
-      // 7. Log du transfert effectif (trace)
-      await client.query(
-        `INSERT INTO transactions (id, user_id, type, amount, currency, recipient_id, member_id, source, status, description, created_at)
-         VALUES ($1, $2, 'transfer', $3, 'HTG', $4, $5, 'app', 'completed', 'Paiement suite à une demande', NOW())`,
-        [
-          uuidv4(),
-          payerId,
-          amount,
-          requesterId,
-          requestTx.member_id || null
-        ]
-      );
-
-      // 8. Frais vers l’admin
-      const adminId = process.env.ADMIN_USER_ID || 'admin-id-123';
-      await client.query(
-        `UPDATE balances SET balance = balance + $1 WHERE user_id = $2`,
-        [transferFee, adminId]
-      );
-      await client.query(
-        `INSERT INTO transactions (id, user_id, type, amount, currency, recipient_id, source, status, description, created_at)
-         VALUES ($1, $2, 'fee', $3, 'HTG', $4, 'fee', 'completed', 'Frais suite à une demande', NOW())`,
-        [uuidv4(), payerId, transferFee, adminId]
-      );
-
-      await client.query('COMMIT');
-
-      // Récupère email du demandeur pour notification
-      const requesterRes = await pool.query('SELECT email FROM users WHERE id = $1', [requesterId]);
-      const email = requesterRes.rows[0]?.email;
-      if (email) {
-        await sendEmail({
-          to: email,
-          subject: "Demande acceptée - Cash Hay",
-          text: `Votre demande d’argent de ${amount} HTG a été acceptée sur Cash Hay.`
-        });
-      }
-
-      // Ajoute une notification pour le demandeur (qui reçoit l’argent)
-      await addNotification({
-        user_id: requesterId,
-        type: 'receive',
-        from_first_name: req.user?.first_name || '',
-        from_last_name: req.user?.last_name || '',
-        from_contact: req.user?.email || req.user?.phone || '',
-        from_profile_image: req.user?.photo_url || '',
-        amount,
-        status: 'accepted'
-      });
-
-      return res.status(200).json({ message: 'Demande acceptée avec succès.' });
-
-    } catch (err) {
-      await client.query('ROLLBACK');
-      throw err;
-    } finally {
-      client.release();
+    if (!notification) {
+      return res.status(404).json({ error: 'Demande introuvable ou déjà traitée.' });
     }
+
+    const { transaction_id, amount } = notification;
+
+    // 💸 Crédite le compte utilisateur
+    await pool.query(
+      `UPDATE balances SET balance = balance + $1 WHERE user_id = $2`,
+      [amount, userId]
+    );
+
+    // ✅ Met à jour le statut de la notification
+    await pool.query(
+      `UPDATE notifications SET status = 'accepted' WHERE id = $1`,
+      [id]
+    );
+
+    // ✅ Met à jour le statut de la transaction liée
+    await pool.query(
+      `UPDATE transactions SET status = 'completed' WHERE id = $1`,
+      [transaction_id]
+    );
+
+    res.json({ message: 'Demande acceptée et créditée avec succès.' });
+
   } catch (err) {
-    return res.status(500).json({ error: 'Erreur serveur lors de l’acceptation.' });
+    console.error('❌ Erreur acceptRequest :', err);
+    res.status(500).json({ error: 'Erreur lors de l’acceptation.' });
   }
 };
 
 export const cancelRequest = async (req: Request, res: Response) => {
   const userId = req.user?.id;
-  const { transactionId } = req.body;
-
-  if (!transactionId) {
-    return res.status(400).json({ error: 'ID de la demande requis.' });
-  }
+  const { id } = req.params;
 
   try {
-    const result = await pool.query(
-      `SELECT * FROM transactions WHERE id = $1 AND type = 'request' AND status = 'pending'`,
-      [transactionId]
+    const notifRes = await pool.query(
+      `SELECT * FROM notifications WHERE id = $1 AND user_id = $2 AND status = 'pending'`,
+      [id, userId]
     );
+    const notification = notifRes.rows[0];
 
-    if (result.rows.length === 0) {
+    if (!notification) {
       return res.status(404).json({ error: 'Demande introuvable ou déjà traitée.' });
     }
 
-    const tx = result.rows[0];
+    const { transaction_id } = notification;
 
-    if (tx.user_id !== userId) {
-      return res.status(403).json({ error: 'Vous ne pouvez annuler que vos propres demandes.' });
-    }
-
-    // Mise à jour du statut dans la table des transactions
+    // ❌ Mettre à jour le statut dans notifications
     await pool.query(
-      `UPDATE transactions SET status = 'cancelled', updated_at = NOW() WHERE id = $1`,
-      [transactionId]
+      `UPDATE notifications SET status = 'cancelled' WHERE id = $1`,
+      [id]
     );
 
-    // 🔔 Notification pour le destinataire
+    // ❌ Mettre à jour le statut dans transactions
     await pool.query(
-      `INSERT INTO notifications (
-        id, user_id, type, from_first_name, from_last_name, from_contact, from_profile_image, amount, status
-      )
-       SELECT gen_random_uuid(), $1, 'cancel', u.first_name, u.last_name, u.username, u.photo_url, $2, 'cancelled'
-       FROM users u WHERE u.id = $3`,
-      [tx.recipient_id, tx.amount, userId]
+      `UPDATE transactions SET status = 'cancelled' WHERE id = $1`,
+      [transaction_id]
     );
 
-    // ➕ Enregistrement dans l'historique (transactions)
-    await pool.query(
-      `INSERT INTO transactions (
-        id, user_id, type, amount, currency, recipient_id, source, status, description, created_at
-      ) VALUES ($1, $2, 'cancel', $3, 'HTG', $4, 'app', 'cancelled', 'Demande annulée par le demandeur', NOW())`,
-      [uuidv4(), userId, tx.amount, tx.recipient_id]
-    );
+    res.json({ message: 'Demande annulée avec succès.' });
 
-    res.status(200).json({ message: 'Demande annulée avec succès.' });
-
-  } catch (error) {
-    console.error('❌ Erreur cancelRequest :', error);
-    res.status(500).json({ error: 'Erreur serveur lors de l’annulation.' });
+  } catch (err) {
+    console.error('❌ Erreur cancelRequest :', err);
+    res.status(500).json({ error: 'Erreur lors de l’annulation.' });
   }
 };
 
-
-export const getRequests = async (req: Request, res: Response) => {
-  const userId = req.user?.id;
-  const { transactionId } = req.body; // 'sent' ou 'received'
-
-  if (!['sent', 'received'].includes(transactionId as string)) {
-    return res.status(400).json({ error: "Paramètre 'direction' invalide. Utilisez 'sent' ou 'received'." });
-  }
-
-  try {
-    let query = '';
-    let params: any[] = [];
-
-    if (transactionId === 'sent') {
-      query = `
-        SELECT t.id, t.amount, t.currency, t.status, t.created_at,
-               u.username AS other_party_username,
-               u.profile_image AS other_party_image,
-               t.description
-        FROM transactions t
-        JOIN users u ON u.id = t.recipient_id
-        WHERE t.type = 'request' AND t.user_id = $1
-        ORDER BY t.created_at DESC
-      `;
-      params = [userId];
-    } else {
-      // direction === 'received'
-      query = `
-        SELECT t.id, t.amount, t.currency, t.status, t.created_at,
-               u.username AS other_party_username,
-               u.profile_image AS other_party_image,
-               t.description
-        FROM transactions t
-        JOIN users u ON u.id = t.user_id
-        WHERE t.type = 'request' AND t.recipient_id = $1
-        ORDER BY t.created_at DESC
-      `;
-      params = [userId];
-    }
-
-    const result = await pool.query(query, params);
-
-    return res.status(200).json({ requests: result.rows });
-  } catch (error) {
-    console.error('❌ Erreur getRequests :', error);
-    return res.status(500).json({ error: 'Erreur serveur lors de la récupération des demandes.' });
-  }
-};
 
 
 export const getMonthlyStatement = async (req: Request, res: Response) => {

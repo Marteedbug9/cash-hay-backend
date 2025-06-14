@@ -13,6 +13,7 @@ import cardRoutes from './routes/cardRoutes';
 import adminRoutes from './routes/adminRoutes';
 import memberRoutes from './routes/memberRoutes';
 import notificationsRoutes from './routes/notificationsRoutes';
+import requestRoutes from './routes/requestRoutes';
 
 import pool from './config/db'; // Connexion test DB
 
@@ -32,6 +33,7 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/members', memberRoutes);
 
 app.use('/api/notifications', notificationsRoutes);
+app.use('/api/requests', requestRoutes);
 
 // ✅ Vérifie DB et démarre serveur
 pool.query('SELECT NOW()')
