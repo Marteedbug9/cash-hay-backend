@@ -2,7 +2,8 @@ import { Request, Response } from 'express';
 import pool from '../config/db'; // Assure-toi que le pool est bien importé
 import { v4 as uuidv4 } from 'uuid';
 
-// --- AJOUTER une notification ---
+
+// ✅ Ajouter une notification
 export const addNotification = async ({
   user_id,
   type,
@@ -40,12 +41,13 @@ export const addNotification = async ({
   );
 };
 
-// --- LISTER toutes les notifications d’un utilisateur ---
-export const listNotifications = async (req: Request, res: Response) => {
+// ✅ Récupérer toutes les notifications d’un utilisateur
+export const getNotifications = async (req: Request, res: Response) => {
   const userId = req.user?.id;
   if (!userId) {
     return res.status(401).json({ error: 'Utilisateur non authentifié.' });
   }
+
   try {
     const result = await pool.query(
       `SELECT
@@ -63,38 +65,26 @@ export const listNotifications = async (req: Request, res: Response) => {
       ORDER BY created_at DESC`,
       [userId]
     );
+
     res.json({ notifications: result.rows });
   } catch (err) {
-    console.error('Erreur lors de la récupération des notifications:', err);
-    res.status(500).json({ error: 'Erreur serveur.' });
+    console.error('❌ Erreur getNotifications :', err);
+    res.status(500).json({ error: 'Erreur serveur lors de la récupération des notifications.' });
   }
 };
 
-// --- Vider toutes les notifications pour un utilisateur (optionnel : reset 24h) ---
+// ✅ Supprimer toutes les notifications pour un utilisateur
 export const clearNotifications = async (req: Request, res: Response) => {
   const userId = req.user?.id;
   if (!userId) {
     return res.status(401).json({ error: 'Utilisateur non authentifié.' });
   }
+
   try {
     await pool.query(`DELETE FROM notifications WHERE user_id = $1`, [userId]);
-    res.json({ message: 'Notifications supprimées.' });
+    res.json({ message: 'Notifications supprimées avec succès.' });
   } catch (err) {
-    console.error('Erreur lors du clear notifications:', err);
-    res.status(500).json({ error: 'Erreur serveur.' });
-  }
-};
-
-
-export const getNotifications = async (req: Request, res: Response) => {
-  const userId = req.user?.id;
-  try {
-    const result = await pool.query(
-      `SELECT * FROM notifications WHERE user_id = $1 ORDER BY created_at DESC`,
-      [userId]
-    );
-    res.json({ notifications: result.rows });
-  } catch (err) {
-    res.status(500).json({ error: 'Erreur serveur.' });
+    console.error('❌ Erreur clearNotifications :', err);
+    res.status(500).json({ error: 'Erreur serveur lors de la suppression.' });
   }
 };

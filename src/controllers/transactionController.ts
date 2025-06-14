@@ -656,26 +656,38 @@ export const cancelRequest = async (req: Request, res: Response) => {
       return res.status(403).json({ error: 'Vous ne pouvez annuler que vos propres demandes.' });
     }
 
+    // Mise à jour du statut dans la table des transactions
     await pool.query(
       `UPDATE transactions SET status = 'cancelled', updated_at = NOW() WHERE id = $1`,
       [transactionId]
     );
 
+    // 🔔 Notification pour le destinataire
     await pool.query(
-  `INSERT INTO notifications (
-    user_id, type, from_first_name, from_last_name, from_contact, from_profile_image, amount, status
-  )
-   SELECT $1, 'cancel', u.first_name, u.last_name, u.username, u.photo_url, $2, 'cancelled'
-   FROM users u WHERE u.id = $3`,
-  [tx.recipient_id, tx.amount, userId]
-);
+      `INSERT INTO notifications (
+        id, user_id, type, from_first_name, from_last_name, from_contact, from_profile_image, amount, status
+      )
+       SELECT gen_random_uuid(), $1, 'cancel', u.first_name, u.last_name, u.username, u.photo_url, $2, 'cancelled'
+       FROM users u WHERE u.id = $3`,
+      [tx.recipient_id, tx.amount, userId]
+    );
+
+    // ➕ Enregistrement dans l'historique (transactions)
+    await pool.query(
+      `INSERT INTO transactions (
+        id, user_id, type, amount, currency, recipient_id, source, status, description, created_at
+      ) VALUES ($1, $2, 'cancel', $3, 'HTG', $4, 'app', 'cancelled', 'Demande annulée par le demandeur', NOW())`,
+      [uuidv4(), userId, tx.amount, tx.recipient_id]
+    );
 
     res.status(200).json({ message: 'Demande annulée avec succès.' });
+
   } catch (error) {
     console.error('❌ Erreur cancelRequest :', error);
     res.status(500).json({ error: 'Erreur serveur lors de l’annulation.' });
   }
 };
+
 
 export const getRequests = async (req: Request, res: Response) => {
   const userId = req.user?.id;
