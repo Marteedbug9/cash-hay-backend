@@ -11,43 +11,50 @@ export const createRequest = async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Champs requis manquants.' });
   }
 
-  try {
-    const transactionId = uuidv4();
+  const transactionId = uuidv4();
+  const notifId = uuidv4();
 
-    // Étape 1 – Enregistrer la transaction (statut "pending")
-    await pool.query(
+  try {
+    await pool.query('BEGIN');
+
+    console.log('➡️ Insertion transaction:', transactionId);
+    const resultTx = await pool.query(
       `INSERT INTO transactions (
         id, user_id, type, amount, currency, status, description, recipient_id, created_at
-      ) VALUES ($1, $2, 'request', $3, 'HTG', 'pending', $4, $5, NOW())`,
+      ) VALUES ($1, $2, $3, $4, 'HTG', 'pending', $5, $6, NOW()) RETURNING id`,
       [
         transactionId,
         senderId,
+        'request',
         amount,
         'Demande d’argent',
         recipientId
       ]
     );
 
-    // Étape 2 – Obtenir les infos de l’expéditeur
+    if (resultTx.rowCount === 0) {
+      throw new Error('❌ Insertion transaction échouée.');
+    }
+
+    console.log('✅ Transaction insérée');
+
     const senderInfo = await pool.query(
       'SELECT first_name, last_name, phone, photo_url FROM users WHERE id = $1',
       [senderId]
     );
 
     const sender = senderInfo.rows[0];
-    if (!sender) {
-      console.error('❌ Expéditeur non trouvé dans la DB');
-      return res.status(404).json({ error: 'Expéditeur introuvable.' });
-    }
+    if (!sender) throw new Error('❌ Expéditeur non trouvé.');
 
-    // Étape 3 – Créer la notification liée à la demande
+    console.log('➡️ Insertion notification:', notifId);
     await pool.query(
       `INSERT INTO notifications (
         id, user_id, type, from_first_name, from_last_name, from_contact, from_profile_image, amount, status, transaction_id
-      ) VALUES ($1, $2, 'request', $3, $4, $5, $6, $7, 'pending', $8)`,
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', $9)`,
       [
-        uuidv4(),
+        notifId,
         recipientId,
+        'request',
         sender.first_name,
         sender.last_name,
         sender.phone,
@@ -57,13 +64,17 @@ export const createRequest = async (req: Request, res: Response) => {
       ]
     );
 
-    res.status(201).json({ message: '✅ Demande envoyée avec succès.', transactionId });
+    console.log('✅ Notification insérée');
+
+    await pool.query('COMMIT');
+    res.status(200).json({ message: 'Demande d’argent enregistrée avec succès.', transactionId });
+
   } catch (err) {
-    console.error('❌ Erreur lors de l’envoi de la demande :', err);
+    console.error('❌ Erreur createRequest :', err);
+    await pool.query('ROLLBACK');
     res.status(500).json({ error: 'Erreur serveur lors de la demande.' });
   }
 };
-
 // ✅ Récupérer la liste des demandes (envoyées ou reçues)
 export const getRequests = async (req: Request, res: Response) => {
   const userId = req.user?.id;

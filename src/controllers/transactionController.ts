@@ -511,7 +511,7 @@ export const acceptRequest = async (req: Request, res: Response) => {
   const { id } = req.params; // ID de la notification
 
   try {
-    // 🔍 Récupérer la notification
+    // 1. 🔍 Récupérer la notification liée
     const notifRes = await pool.query(
       `SELECT * FROM notifications WHERE id = $1 AND user_id = $2 AND status = 'pending'`,
       [id, userId]
@@ -524,29 +524,61 @@ export const acceptRequest = async (req: Request, res: Response) => {
 
     const { transaction_id, amount } = notification;
 
-    // 💸 Crédite le compte utilisateur
+    // 2. 🔍 Vérifier la transaction liée
+    const txRes = await pool.query(
+      `SELECT * FROM transactions WHERE id = $1 AND status = 'pending'`,
+      [transaction_id]
+    );
+    const transaction = txRes.rows[0];
+    if (!transaction) {
+      return res.status(404).json({ error: 'Transaction introuvable ou déjà traitée.' });
+    }
+
+    // 3. 💰 Vérifier le solde actuel
+    const balanceRes = await pool.query(
+      `SELECT balance FROM balances WHERE user_id = $1`,
+      [userId]
+    );
+    const currentBalance = parseFloat(balanceRes.rows[0]?.balance || '0');
+
+    const tax = 0.57; // 💵 change ici si tu veux une taxe (ex : 1)
+    const totalToDeduct = parseFloat(amount) + tax;
+
+    if (currentBalance < totalToDeduct) {
+      return res.status(400).json({
+        error: `Solde insuffisant. Vous avez ${currentBalance} HTG mais ${totalToDeduct} HTG est requis.`,
+      });
+    }
+
+    // 4. 💳 Débiter le compte de l'utilisateur (celui qui accepte)
     await pool.query(
-      `UPDATE balances SET balance = balance + $1 WHERE user_id = $2`,
-      [amount, userId]
+      `UPDATE balances SET balance = balance - $1 WHERE user_id = $2`,
+      [totalToDeduct, userId]
     );
 
-    // ✅ Met à jour le statut de la notification
+    // 5. 💸 Créditer le compte de l'expéditeur initial
+    await pool.query(
+      `UPDATE balances SET balance = balance + $1 WHERE user_id = $2`,
+      [amount, transaction.user_id]
+    );
+
+    // 6. ✅ Mettre à jour la notification
     await pool.query(
       `UPDATE notifications SET status = 'accepted' WHERE id = $1`,
       [id]
     );
 
-    // ✅ Met à jour le statut de la transaction liée
+    // 7. ✅ Mettre à jour la transaction
     await pool.query(
       `UPDATE transactions SET status = 'completed' WHERE id = $1`,
       [transaction_id]
     );
 
-    res.json({ message: 'Demande acceptée et créditée avec succès.' });
+    res.json({ message: 'Demande acceptée et transférée avec succès.' });
 
   } catch (err) {
     console.error('❌ Erreur acceptRequest :', err);
-    res.status(500).json({ error: 'Erreur lors de l’acceptation.' });
+    res.status(500).json({ error: 'Erreur lors de l’acceptation de la demande.' });
   }
 };
 
