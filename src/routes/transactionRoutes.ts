@@ -10,7 +10,7 @@ import {
   acceptRequest,
   cancelRequest,
   getMonthlyStatement,
-  getRequests,
+ 
   // updateBalance
 } from '../controllers/transactionController';
 import { verifyToken } from '../middlewares/verifyToken';
@@ -45,8 +45,7 @@ router.post('/accept-request', verifyToken, verifyMember, acceptRequest);
 // ❌ Refuser ou annuler une demande
 router.post('/cancel-request', verifyToken, verifyMember, cancelRequest);
 
-// 📋 Liste des demandes (peut rester avec verifyToken simple)
-router.get('/requests', verifyToken, getRequests);
+
 
 router.get('/transactions/statement', verifyToken, getMonthlyStatement);
 // 🔧 Route manquante ?
