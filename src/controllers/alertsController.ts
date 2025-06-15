@@ -48,3 +48,37 @@ if (user.email) {
   // Peut faire un res.json ou continuer ton flow habituel
   return res.status(200).json({ message: 'Alerte traitée (si nécessaire).' });
 };
+
+// Webhook Twilio pour recevoir la réponse Y/N
+export const handleSMSReply = async (req: Request, res: Response) => {
+  const from = req.body.From;
+  const body = req.body.Body?.trim().toUpperCase();
+
+  try {
+    if (body !== 'Y' && body !== 'N') {
+      return res.status(200).send('<Response></Response>');
+    }
+    // 🔍 Trouver le user par numéro
+    const userRes = await pool.query(
+      `SELECT id FROM users WHERE phone = $1`,
+      [from]
+    );
+    if (userRes.rows.length === 0) {
+      return res.status(200).send('<Response></Response>');
+    }
+    const userId = userRes.rows[0].id;
+
+    // Update l’alerte
+    await pool.query(
+      `UPDATE alerts
+       SET response = $1, raw_response = $2
+       WHERE user_id = $3 AND response IS NULL
+       ORDER BY created_at DESC LIMIT 1`,
+      [body, body, userId]
+    );
+
+    res.status(200).send('<Response></Response>');
+  } catch (err) {
+    res.status(500).send('<Response></Response>');
+  }
+};
