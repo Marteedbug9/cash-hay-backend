@@ -17,7 +17,7 @@ export const requestCard = async (req: Request, res: Response) => {
       return res.status(400).json({ error: "Vous avez déjà une carte active ou en attente." });
     }
 
-    // Enregistrement de la carte gratuite, le paiement sera différé
+    // Enregistrement de la carte gratuite, paiement différé
     await client.query(
       'INSERT INTO cards (user_id, status, is_locked, requested_at) VALUES ($1, $2, $3, CURRENT_TIMESTAMP)',
       [userId, 'pending', false]
@@ -39,14 +39,41 @@ export const toggleCardLock = async (req: Request, res: Response) => {
   const userId = req.user?.id;
   const { is_locked } = req.body;
 
-  await pool.query('UPDATE cards SET is_locked = $1 WHERE user_id = $2', [is_locked, userId]);
+  // Sécurité: vérifie que la carte existe d'abord (optionnel)
+  const { rows: cards } = await pool.query(
+    'SELECT * FROM cards WHERE user_id = $1 AND status IN ($2, $3)',
+    [userId, 'active', 'pending']
+  );
+  if (cards.length === 0) {
+    return res.status(404).json({ error: "Aucune carte à verrouiller/déverrouiller." });
+  }
+
+  await pool.query(
+    'UPDATE cards SET is_locked = $1 WHERE user_id = $2 AND status IN ($3, $4)',
+    [is_locked, userId, 'active', 'pending']
+  );
   return res.json({ message: `Carte ${is_locked ? 'verrouillée' : 'déverrouillée'}` });
 };
 
-// ❌ Annuler la carte
+// ❌ Annuler la carte (ne supprime pas !)
+// Seul un agent Cash Hay peut supprimer définitivement après audit, sinon on la “lock” et “cancel”
 export const cancelCard = async (req: Request, res: Response) => {
   const userId = req.user?.id;
 
-  await pool.query('DELETE FROM cards WHERE user_id = $1', [userId]);
-  return res.json({ message: 'Carte annulée' });
+  // Sécurité: la carte doit exister, et être dans un statut annulable
+  const { rows: cards } = await pool.query(
+    'SELECT * FROM cards WHERE user_id = $1 AND status IN ($2, $3)',
+    [userId, 'active', 'pending']
+  );
+  if (cards.length === 0) {
+    return res.status(404).json({ error: "Aucune carte active à annuler." });
+  }
+
+  // On met à jour le statut et on verrouille, mais on NE SUPPRIME PAS
+  await pool.query(
+    'UPDATE cards SET status = $1, is_locked = $2 WHERE user_id = $3 AND status IN ($4, $5)',
+    ['cancelled', true, userId, 'active', 'pending']
+  );
+
+  return res.json({ message: 'Carte annulée. Un agent validera l’annulation si nécessaire.' });
 };

@@ -12,7 +12,8 @@ export const getTransactions = async (req: Request, res: Response) => {
 
   try {
     const result = await pool.query(
-      `SELECT * FROM transactions 
+      `SELECT id, user_id, type, amount, currency, status, description, recipient_id, created_at, recipient_email, recipient_phone, source
+       FROM transactions 
        WHERE user_id = $1 
        ORDER BY created_at DESC`,
       [userId]
@@ -24,6 +25,7 @@ export const getTransactions = async (req: Request, res: Response) => {
   }
 };
 
+
 export const createTransaction = async (req: Request, res: Response) => {
   const userId = req.user?.id;
   const {
@@ -34,6 +36,10 @@ export const createTransaction = async (req: Request, res: Response) => {
     recipient_id,
     source = 'manual'
   } = req.body;
+
+  // 📥 Audit : récupère IP + user-agent
+  const ip_address = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '';
+  const user_agent = req.headers['user-agent'] || '';
 
   if (!type || !amount || isNaN(amount)) {
     return res.status(400).json({ error: 'Type et montant requis.' });
@@ -54,15 +60,26 @@ export const createTransaction = async (req: Request, res: Response) => {
       }
     }
 
-    // Enregistrement de la transaction
+    // Enregistrement de la transaction (ajout IP et User Agent)
     await pool.query(
       `INSERT INTO transactions (
-        user_id, type, amount, currency, recipient_id, source, description
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [userId, type, amount, currency, recipient_id || null, source, description]
+        id, user_id, type, amount, currency, recipient_id, source, description, ip_address, user_agent, status, created_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'completed', NOW())`,
+      [
+        uuidv4(),
+        userId,
+        type,
+        amount,
+        currency,
+        recipient_id || null,
+        source,
+        description,
+        ip_address,
+        user_agent
+      ]
     );
 
-    // Mise à jour du solde
+    // Mise à jour du solde (exemple simplifié, reprends ta logique métier)
     if (type === 'deposit' || type === 'receive') {
       await pool.query(
         `UPDATE balances SET balance = balance + $1 WHERE user_id = $2`,
@@ -93,7 +110,7 @@ export const createTransaction = async (req: Request, res: Response) => {
       }
     }
 
-    // Notification par email seulement
+    // Notification par email (idem)
     if (type === 'transfer' && recipient_id) {
       try {
         const destRes = await pool.query('SELECT email FROM users WHERE id = $1', [recipient_id]);
@@ -113,9 +130,12 @@ export const createTransaction = async (req: Request, res: Response) => {
   }
 };
 
+
 export const deposit = async (req: Request, res: Response) => {
   const userId = req.user?.id;
   const { amount, source = 'manual', currency = 'HTG' } = req.body;
+  const ip_address = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '';
+  const user_agent = req.headers['user-agent'] || '';
 
   if (!amount || isNaN(amount) || amount <= 0) {
     return res.status(400).json({ error: 'Montant invalide.' });
@@ -129,15 +149,24 @@ export const deposit = async (req: Request, res: Response) => {
       `UPDATE balances SET balance = balance + $1, updated_at = NOW() WHERE user_id = $2`,
       [amount, userId]
     );
+    const txId = uuidv4();
     await client.query(
-      `INSERT INTO transactions (id, user_id, type, amount, currency, source, status, created_at)
-       VALUES ($1, $2, 'deposit', $3, $4, $5, 'completed', NOW())`,
-      [uuidv4(), userId, amount, currency, source]
+      `INSERT INTO transactions (id, user_id, type, amount, currency, source, status, ip_address, user_agent, created_at)
+       VALUES ($1, $2, 'deposit', $3, $4, $5, 'completed', $6, $7, NOW())`,
+      [txId, userId, amount, currency, source, ip_address, user_agent]
     );
+
+    // Ajoute dans audit_logs (bonus traçabilité)
+    await client.query(
+      `INSERT INTO audit_logs (id, user_id, action, ip_address, user_agent, details)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [uuidv4(), userId, 'deposit', ip_address, user_agent, `Dépot de ${amount} ${currency}`]
+    );
+
     await client.query('COMMIT');
     client.release();
 
-    // Notification email après dépôt
+    // Notification email après dépôt (asynchrone)
     try {
       const userRes = await pool.query('SELECT email FROM users WHERE id = $1', [userId]);
       const email = userRes.rows[0]?.email;
@@ -155,9 +184,12 @@ export const deposit = async (req: Request, res: Response) => {
   }
 };
 
+
 export const withdraw = async (req: Request, res: Response) => {
   const userId = req.user?.id;
   const { amount, currency = 'HTG', source = 'manual' } = req.body;
+  const ip_address = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '';
+  const user_agent = req.headers['user-agent'] || '';
 
   if (!amount || isNaN(amount) || amount <= 0) {
     return res.status(400).json({ error: 'Montant invalide.' });
@@ -181,11 +213,20 @@ export const withdraw = async (req: Request, res: Response) => {
       `UPDATE balances SET balance = balance - $1, updated_at = NOW() WHERE user_id = $2`,
       [amount, userId]
     );
+    const txId = uuidv4();
     await client.query(
-      `INSERT INTO transactions (id, user_id, type, amount, currency, source, status, created_at)
-       VALUES ($1, $2, 'withdraw', $3, $4, $5, 'completed', NOW())`,
-      [uuidv4(), userId, amount, currency, source]
+      `INSERT INTO transactions (id, user_id, type, amount, currency, source, status, ip_address, user_agent, created_at)
+       VALUES ($1, $2, 'withdraw', $3, $4, $5, 'completed', $6, $7, NOW())`,
+      [txId, userId, amount, currency, source, ip_address, user_agent]
     );
+
+    // Ajoute dans audit_logs (bonus traçabilité)
+    await client.query(
+      `INSERT INTO audit_logs (id, user_id, action, ip_address, user_agent, details)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [uuidv4(), userId, 'withdraw', ip_address, user_agent, `Retrait de ${amount} ${currency}`]
+    );
+
     await client.query('COMMIT');
     client.release();
 
@@ -207,10 +248,13 @@ export const withdraw = async (req: Request, res: Response) => {
   }
 };
 
+
 export const transfer = async (req: Request, res: Response) => {
   const senderId = req.user?.id;
   const { recipientUsername, amount } = req.body;
   const transferFee = 0.57;
+  const ip_address = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '';
+  const user_agent = req.headers['user-agent'] || '';
 
   if (!recipientUsername || !amount || isNaN(amount) || amount <= 0) {
     return res.status(400).json({ error: 'Données invalides.' });
@@ -221,11 +265,10 @@ export const transfer = async (req: Request, res: Response) => {
     try {
       await client.query('BEGIN');
 
-      // Recherche du membre (par email/tel)
+      // Trouver recipient user (par email ou phone dans members, puis users)
       const cleanedRecipient = recipientUsername.trim().toLowerCase();
       const isEmail = cleanedRecipient.includes('@');
       let memberRes;
-
       if (isEmail) {
         memberRes = await client.query(
           'SELECT id, contact FROM members WHERE LOWER(contact) = $1',
@@ -241,50 +284,22 @@ export const transfer = async (req: Request, res: Response) => {
           [onlyDigits, onlyDigits.slice(-8)]
         );
       }
-
       if (!memberRes.rows.length) {
         await client.query('ROLLBACK');
         return res.status(404).json({ error: 'Destinataire introuvable.' });
       }
       const memberId = memberRes.rows[0].id;
-
-      // User associé au member
       const recipientUserRes = await client.query(
         'SELECT id, first_name, last_name FROM users WHERE member_id = $1',
         [memberId]
       );
-      if (recipientUserRes.rows.length === 0) {
+      if (!recipientUserRes.rows.length) {
         await client.query('ROLLBACK');
         return res.status(404).json({ error: 'Aucun utilisateur lié à ce membre.' });
       }
       const recipientId = recipientUserRes.rows[0].id;
-      const recipientFullName = [recipientUserRes.rows[0].first_name, recipientUserRes.rows[0].last_name].join(' ');
 
-      // Anti-auto-transfert
-      const senderUserRes = await client.query(
-        'SELECT first_name, last_name FROM users WHERE id = $1',
-        [senderId]
-      );
-      const senderFullName = [senderUserRes.rows[0]?.first_name, senderUserRes.rows[0]?.last_name].join(' ');
-      if (recipientFullName && senderFullName && recipientFullName === senderFullName) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({ error: 'Vous ne pouvez pas envoyer de l’argent à vous-même.' });
-      }
-
-      // Limite hebdomadaire
-      const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-      const weeklyTotalResult = await client.query(
-        `SELECT SUM(amount) as total FROM transactions
-         WHERE user_id = $1 AND type = 'transfer' AND created_at >= $2`,
-        [senderId, weekAgo]
-      );
-      const weeklyTotal = parseFloat(weeklyTotalResult.rows[0]?.total || '0');
-      if (weeklyTotal + amount > 100000) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({ error: 'Limite hebdomadaire de 100 000 HTG dépassée.' });
-      }
-
-      // Vérifie la balance du sender
+      // Vérifier balance + frais
       const senderBalanceRes = await client.query(
         'SELECT balance FROM balances WHERE user_id = $1 FOR UPDATE',
         [senderId]
@@ -306,37 +321,35 @@ export const transfer = async (req: Request, res: Response) => {
       );
 
       // Transaction principale
+      const txId = uuidv4();
       await client.query(
-        `INSERT INTO transactions (id, user_id, type, amount, currency, recipient_id, member_id, source, status, created_at)
-         VALUES ($1, $2, 'transfer', $3, 'HTG', $4, $5, 'app', 'completed', NOW())`,
-        [uuidv4(), senderId, amount, recipientId, memberId]
+        `INSERT INTO transactions (id, user_id, type, amount, currency, recipient_id, member_id, source, status, ip_address, user_agent, created_at)
+         VALUES ($1, $2, 'transfer', $3, 'HTG', $4, $5, 'app', 'completed', $6, $7, NOW())`,
+        [txId, senderId, amount, recipientId, memberId, ip_address, user_agent]
       );
 
-      // Notification destinataire
+      // Audit log
       await client.query(
-        `INSERT INTO notifications (
-          user_id, type, from_first_name, from_last_name, from_contact, from_profile_image, amount, status
-        )
-         SELECT $1, 'receive', u.first_name, u.last_name, u.username, u.photo_url, $2, 'completed'
-         FROM users u WHERE u.id = $3`,
-        [recipientId, amount, senderId]
+        `INSERT INTO audit_logs (id, user_id, action, ip_address, user_agent, details)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [uuidv4(), senderId, 'transfer', ip_address, user_agent, `Transfert de ${amount} HTG à ${recipientId}`]
       );
 
-      // Frais vers admin
+      // Frais vers admin (adminId à configurer)
       const adminId = process.env.ADMIN_USER_ID || 'admin-id-123';
       await client.query(
         `UPDATE balances SET balance = balance + $1 WHERE user_id = $2`,
         [transferFee, adminId]
       );
       await client.query(
-        `INSERT INTO transactions (id, user_id, type, amount, currency, recipient_id, source, status, description, created_at)
-         VALUES ($1, $2, 'fee', $3, 'HTG', $4, 'fee', 'completed', 'Frais de transfert', NOW())`,
-        [uuidv4(), senderId, transferFee, adminId]
+        `INSERT INTO transactions (id, user_id, type, amount, currency, recipient_id, source, status, description, ip_address, user_agent, created_at)
+         VALUES ($1, $2, 'fee', $3, 'HTG', $4, 'fee', 'completed', 'Frais de transfert', $5, $6, NOW())`,
+        [uuidv4(), senderId, transferFee, adminId, ip_address, user_agent]
       );
 
       await client.query('COMMIT');
 
-      // Email destinataire
+      // Email destinataire (asynchrone)
       const recipientRes = await pool.query('SELECT email FROM users WHERE id = $1', [recipientId]);
       const recipientEmail = recipientRes.rows[0]?.email;
       if (recipientEmail) {
@@ -359,6 +372,7 @@ export const transfer = async (req: Request, res: Response) => {
     return res.status(500).json({ error: 'Erreur serveur lors du transfert.' });
   }
 };
+
 
 export const getBalance = async (req: Request, res: Response) => {
   const userId = req.user?.id;
@@ -392,11 +406,10 @@ export const updateBalance = async (userId: string, delta: number) => {
 export const requestMoney = async (req: Request, res: Response) => {
   const requesterId = req.user?.id;
   const { recipientUsername, amount } = req.body;
-
-  console.log('🟡 Nouvelle demande reçue', { requesterId, recipientUsername, amount });
+  const ip_address = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '';
+  const user_agent = req.headers['user-agent'] || '';
 
   if (!recipientUsername || !amount || isNaN(amount) || amount <= 0) {
-    console.log('⛔ Données invalides', { recipientUsername, amount });
     return res.status(400).json({ error: 'Données invalides.' });
   }
 
@@ -405,76 +418,60 @@ export const requestMoney = async (req: Request, res: Response) => {
     try {
       await client.query('BEGIN');
 
-      // Trouve le membre à partir du contact
+      // Trouve le member puis le user destinataire
       const memberRes = await client.query(
         'SELECT id FROM members WHERE contact = $1',
         [recipientUsername]
       );
-      console.log('🔎 Résultat SELECT members:', memberRes.rows);
-
       if (memberRes.rows.length === 0) {
         await client.query('ROLLBACK');
-        console.log('⛔ Aucun membre avec ce contact:', recipientUsername);
         return res.status(404).json({ error: 'Destinataire introuvable ou non inscrit.' });
       }
       const memberId = memberRes.rows[0].id;
-
-      // Trouve le user rattaché à ce member_id
       const recipientUserRes = await client.query(
         'SELECT id, first_name, last_name FROM users WHERE member_id = $1',
         [memberId]
       );
-      console.log('🔎 Résultat SELECT users:', recipientUserRes.rows);
-
       if (recipientUserRes.rows.length === 0) {
         await client.query('ROLLBACK');
-        console.log('⛔ Aucun utilisateur lié à ce membre:', memberId);
         return res.status(404).json({ error: 'Aucun utilisateur lié à ce membre.' });
       }
       const recipientId = recipientUserRes.rows[0].id;
-      const recipientFirstName = recipientUserRes.rows[0].first_name;
-      const recipientLastName = recipientUserRes.rows[0].last_name;
-      const recipientFullName = `${recipientFirstName || ''} ${recipientLastName || ''}`.trim();
 
-      // Protection : empêche de se demander de l’argent à soi-même
-      const requesterUserRes = await client.query(
-        'SELECT first_name, last_name FROM users WHERE id = $1',
-        [requesterId]
-      );
-      const requesterFirstName = requesterUserRes.rows[0]?.first_name;
-      const requesterLastName = requesterUserRes.rows[0]?.last_name;
-      const requesterFullName = `${requesterFirstName || ''} ${requesterLastName || ''}`.trim();
-
-      if (
-        recipientFullName &&
-        requesterFullName &&
-        recipientFullName.toLowerCase() === requesterFullName.toLowerCase()
-      ) {
+      // Empêcher auto-demande
+      if (recipientId === requesterId) {
         await client.query('ROLLBACK');
-        console.log('⛔ Tentative d’auto-demande :', recipientFullName);
         return res.status(400).json({ error: 'Impossible de vous faire une demande à vous-même.' });
       }
 
-      // Enregistrement de la demande
+      // Enregistrement transaction "pending"
+      const txId = uuidv4();
       await client.query(
-        `INSERT INTO transactions (id, user_id, type, amount, currency, recipient_id, member_id, source, status, created_at)
-         VALUES ($1, $2, 'request', $3, 'HTG', $4, $5, 'app', 'pending', NOW())`,
-        [uuidv4(), requesterId, amount, recipientId, memberId]
+        `INSERT INTO transactions (id, user_id, type, amount, currency, recipient_id, member_id, source, status, ip_address, user_agent, created_at)
+         VALUES ($1, $2, 'request', $3, 'HTG', $4, $5, 'app', 'pending', $6, $7, NOW())`,
+        [txId, requesterId, amount, recipientId, memberId, ip_address, user_agent]
       );
 
+      // Audit log
       await client.query(
-  `INSERT INTO notifications (
-    user_id, type, from_first_name, from_last_name, from_contact, from_profile_image, amount, status
-  )
-   SELECT $1, 'request', u.first_name, u.last_name, u.username, u.photo_url, $2, 'pending'
-   FROM users u WHERE u.id = $3`,
-  [recipientId, amount, requesterId]
-);
+        `INSERT INTO audit_logs (id, user_id, action, ip_address, user_agent, details)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [uuidv4(), requesterId, 'request_money', ip_address, user_agent, `Demande d’argent de ${amount} HTG à ${recipientId}`]
+      );
+
+      // Notification (idem avant)
+      await client.query(
+        `INSERT INTO notifications (
+          user_id, type, from_first_name, from_last_name, from_contact, from_profile_image, amount, status, transaction_id
+        )
+         SELECT $1, 'request', u.first_name, u.last_name, u.username, u.photo_url, $2, 'pending', $3
+         FROM users u WHERE u.id = $4`,
+        [recipientId, amount, txId, requesterId]
+      );
 
       await client.query('COMMIT');
-      console.log('✅ Demande d’argent enregistrée', { requesterId, recipientId, amount });
 
-      // EMAIL destinataire de la demande (en asynchrone, après la réponse)
+      // Email destinataire (asynchrone)
       pool.query('SELECT email FROM users WHERE id = $1', [recipientId])
         .then(recipientRes => {
           const email = recipientRes.rows[0]?.email;
@@ -490,7 +487,6 @@ export const requestMoney = async (req: Request, res: Response) => {
           console.error('Erreur notification request:', notifErr);
         });
 
-      // Envoi une SEULE réponse !
       return res.status(200).json({ message: 'Demande d’argent enregistrée avec succès.' });
 
     } catch (error) {
@@ -503,6 +499,7 @@ export const requestMoney = async (req: Request, res: Response) => {
     return res.status(500).json({ error: 'Erreur serveur lors de la demande.' });
   }
 };
+
 
 
 

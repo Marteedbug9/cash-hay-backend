@@ -2,10 +2,11 @@ import { Request, Response } from 'express';
 import pool from '../config/db';
 import { v4 as uuidv4 } from 'uuid';
 
-// ✅ Créer une demande d’argent
 export const createRequest = async (req: Request, res: Response) => {
   const senderId = req.user?.id;
   const { recipientId, amount } = req.body;
+  const ip_address = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '';
+  const user_agent = req.headers['user-agent'] || '';
 
   if (!senderId || !recipientId || !amount) {
     return res.status(400).json({ error: 'Champs requis manquants.' });
@@ -17,27 +18,38 @@ export const createRequest = async (req: Request, res: Response) => {
   try {
     await pool.query('BEGIN');
 
-    console.log('➡️ Insertion transaction:', transactionId);
-    const resultTx = await pool.query(
+    // Enregistre la transaction (pending)
+    await pool.query(
       `INSERT INTO transactions (
-        id, user_id, type, amount, currency, status, description, recipient_id, created_at
-      ) VALUES ($1, $2, $3, $4, 'HTG', 'pending', $5, $6, NOW()) RETURNING id`,
+        id, user_id, type, amount, currency, status, description, recipient_id, ip_address, user_agent, created_at
+      ) VALUES ($1, $2, $3, $4, 'HTG', 'pending', $5, $6, $7, $8, NOW())`,
       [
         transactionId,
         senderId,
         'request',
         amount,
         'Demande d’argent',
-        recipientId
+        recipientId,
+        ip_address,
+        user_agent
       ]
     );
 
-    if (resultTx.rowCount === 0) {
-      throw new Error('❌ Insertion transaction échouée.');
-    }
+    // Audit log
+    await pool.query(
+      `INSERT INTO audit_logs (id, user_id, action, ip_address, user_agent, details)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [
+        uuidv4(),
+        senderId,
+        'request_money',
+        ip_address,
+        user_agent,
+        `Demande ${amount} HTG à ${recipientId}`
+      ]
+    );
 
-    console.log('✅ Transaction insérée');
-
+    // Infos de l'expéditeur pour la notification
     const senderInfo = await pool.query(
       'SELECT first_name, last_name, phone, photo_url FROM users WHERE id = $1',
       [senderId]
@@ -46,7 +58,7 @@ export const createRequest = async (req: Request, res: Response) => {
     const sender = senderInfo.rows[0];
     if (!sender) throw new Error('❌ Expéditeur non trouvé.');
 
-    console.log('➡️ Insertion notification:', notifId);
+    // Notif
     await pool.query(
       `INSERT INTO notifications (
         id, user_id, type, from_first_name, from_last_name, from_contact, from_profile_image, amount, status, transaction_id
@@ -64,8 +76,6 @@ export const createRequest = async (req: Request, res: Response) => {
       ]
     );
 
-    console.log('✅ Notification insérée');
-
     await pool.query('COMMIT');
     res.status(200).json({ message: 'Demande d’argent enregistrée avec succès.', transactionId });
 
@@ -75,6 +85,7 @@ export const createRequest = async (req: Request, res: Response) => {
     res.status(500).json({ error: 'Erreur serveur lors de la demande.' });
   }
 };
+
 // ✅ Récupérer la liste des demandes (envoyées ou reçues)
 export const getRequests = async (req: Request, res: Response) => {
   const userId = req.user?.id;

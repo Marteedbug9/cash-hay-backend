@@ -13,6 +13,7 @@ export const addNotification = async ({
   from_profile_image,
   amount,
   status,
+  transaction_id, // Optionnel, pour rattacher la notif à la bonne transaction
 }: {
   user_id: string;
   type: 'request' | 'receive' | 'cancel';
@@ -22,11 +23,12 @@ export const addNotification = async ({
   from_profile_image: string;
   amount: number;
   status: 'pending' | 'accepted' | 'cancelled';
+  transaction_id?: string;
 }) => {
   await pool.query(
     `INSERT INTO notifications (
-      id, user_id, type, from_first_name, from_last_name, from_contact, from_profile_image, amount, status
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      id, user_id, type, from_first_name, from_last_name, from_contact, from_profile_image, amount, status, transaction_id
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
     [
       uuidv4(),
       user_id,
@@ -37,9 +39,11 @@ export const addNotification = async ({
       from_profile_image,
       amount,
       status,
+      transaction_id || null,
     ]
   );
 };
+
 
 // ✅ Récupérer toutes les notifications d’un utilisateur
 export const getNotifications = async (req: Request, res: Response) => {
