@@ -40,10 +40,11 @@ router.post('/', verifyToken, verifyMember, createTransaction);
 router.post('/request', verifyToken, verifyMember, requestMoney);
 
 // ✅ Accepter une demande
-router.post('/accept-request', verifyToken, verifyMember, acceptRequest);
+router.post('/accept-request/:id', verifyToken, verifyMember, acceptRequest);
 
 // ❌ Refuser ou annuler une demande
-router.post('/cancel-request', verifyToken, verifyMember, cancelRequest);
+router.post('/cancel-request/:id', verifyToken, verifyMember, cancelRequest);
+
 
 
 
