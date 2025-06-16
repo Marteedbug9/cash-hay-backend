@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-import jwt, { JwtPayload } from 'jsonwebtoken';
+import jwt from 'jsonwebtoken';
 
 export const verifyToken = (
   req: Request,
@@ -17,12 +17,11 @@ export const verifyToken = (
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'devsecretkey');
 
-    // ✅ Vérifie que c’est bien un objet et qu’il a un champ id
     if (typeof decoded !== 'object' || !('id' in decoded)) {
       return res.status(403).json({ error: 'Token invalide.' });
     }
 
-    // ✅ Cast vers UserPayload
+    // Ajout correct sur req.user (déclaré dans tes types Express)
     req.user = decoded as Express.UserPayload;
 
     if (req.user?.is_otp_verified === false) {
@@ -34,10 +33,13 @@ export const verifyToken = (
     console.error('❌ Erreur de vérification du token :', err);
     return res.status(403).json({ error: 'Accès non autorisé.' });
   }
+};
 
-  };
-
-  export const verifyAdmin = (req: Request, res: Response, next: NextFunction) => {
+export const verifyAdmin = (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
   const user = req.user as Express.UserPayload;
 
   if (user?.role !== 'admin') {

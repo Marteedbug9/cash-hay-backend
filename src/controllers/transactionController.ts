@@ -8,6 +8,7 @@ import { addNotification } from './notificationsController';
 
 
 export const getTransactions = async (req: Request, res: Response) => {
+  console.log("✅ getTransactions appelé !");
   const userId = req.user?.id;
 
   try {
