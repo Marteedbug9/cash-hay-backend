@@ -6,4 +6,6 @@ const router = express.Router();
 
 router.get('/:memberId/contact', verifyToken, getMemberContact);
 
+// **Ajoute celle-ci pour récupérer par user_id**
+
 export default router;
