@@ -11,11 +11,53 @@ export const getTransactions = async (req: Request, res: Response) => {
   const userId = req.user?.id;
 
   try {
+    // Toutes les transactions où l'utilisateur est soit expéditeur soit destinataire
     const result = await pool.query(
-      `SELECT id, user_id, type, amount, currency, status, description, recipient_id, created_at, recipient_email, recipient_phone, source
-       FROM transactions 
-       WHERE user_id = $1 
-       ORDER BY created_at DESC`,
+      `SELECT 
+  t.id,
+  t.user_id,
+  t.type,
+  t.amount,
+  t.currency,
+  t.status,
+  t.description,
+  t.recipient_id,
+  t.created_at AS date,
+  t.source,
+  t.recipient_email,
+  t.recipient_phone,
+  u1.first_name AS sender_first_name,
+  u1.last_name AS sender_last_name,
+  u2.first_name AS recipient_first_name,
+  u2.last_name AS recipient_last_name,
+  COALESCE(b.name, 
+    CASE 
+      WHEN t.type IN ('send', 'transfer') AND u2.id IS NOT NULL
+        THEN CONCAT(u2.first_name, ' ', u2.last_name)
+      WHEN t.type = 'receive' AND u1.id IS NOT NULL
+        THEN CONCAT(u1.first_name, ' ', u1.last_name)
+      WHEN t.type = 'card_payment' AND t.description IS NOT NULL
+        THEN t.description
+      ELSE 'Cash Hay'
+    END
+  ) AS display_name,
+  b.name AS business_name,
+  b.type AS business_type,
+  b.ip_address AS business_ip,
+  u2.photo_url AS recipient_photo,
+  u1.photo_url AS sender_photo,
+  CASE
+    WHEN t.user_id = $1 AND t.type IN ('send','transfer','withdraw','card_payment','fee') THEN 'out'
+    WHEN t.recipient_id = $1 OR t.type IN ('receive','deposit') THEN 'in'
+    ELSE NULL
+  END AS direction
+FROM transactions t
+LEFT JOIN users u1 ON u1.id = t.user_id
+LEFT JOIN users u2 ON u2.id = t.recipient_id
+LEFT JOIN business b ON t.business_id = b.id
+WHERE t.user_id = $1 OR t.recipient_id = $1
+ORDER BY t.created_at DESC;
+`,
       [userId]
     );
     res.json({ transactions: result.rows });
@@ -34,7 +76,8 @@ export const createTransaction = async (req: Request, res: Response) => {
     currency = 'HTG',
     description,
     recipient_id,
-    source = 'manual'
+    source = 'manual',
+    business_id // <-- nouveau
   } = req.body;
 
   // 📥 Audit : récupère IP + user-agent
@@ -60,11 +103,11 @@ export const createTransaction = async (req: Request, res: Response) => {
       }
     }
 
-    // Enregistrement de la transaction (ajout IP et User Agent)
+    // Enregistrement de la transaction (ajout IP, User Agent et business_id)
     await pool.query(
       `INSERT INTO transactions (
-        id, user_id, type, amount, currency, recipient_id, source, description, ip_address, user_agent, status, created_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'completed', NOW())`,
+        id, user_id, type, amount, currency, recipient_id, source, description, ip_address, user_agent, business_id, status, created_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'completed', NOW())`,
       [
         uuidv4(),
         userId,
@@ -75,11 +118,12 @@ export const createTransaction = async (req: Request, res: Response) => {
         source,
         description,
         ip_address,
-        user_agent
+        user_agent,
+        business_id || null // Ajout ici
       ]
     );
 
-    // Mise à jour du solde (exemple simplifié, reprends ta logique métier)
+    // Mise à jour du solde (reprends ta logique métier)
     if (type === 'deposit' || type === 'receive') {
       await pool.query(
         `UPDATE balances SET balance = balance + $1 WHERE user_id = $2`,
@@ -91,12 +135,10 @@ export const createTransaction = async (req: Request, res: Response) => {
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
-        // Débit expéditeur
         await client.query(
           `UPDATE balances SET balance = balance - $1 WHERE user_id = $2`,
           [amount, userId]
         );
-        // Crédit bénéficiaire
         await client.query(
           `UPDATE balances SET balance = balance + $1 WHERE user_id = $2`,
           [amount, recipient_id]
