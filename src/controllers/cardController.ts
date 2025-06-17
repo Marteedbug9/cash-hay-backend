@@ -77,3 +77,34 @@ export const cancelCard = async (req: Request, res: Response) => {
 
   return res.json({ message: 'Carte annulée. Un agent validera l’annulation si nécessaire.' });
 };
+
+export const requestPhysicalCard = async (req: Request, res: Response) => {
+  const client = await pool.connect();
+  try {
+    const userId = req.user?.id;
+
+    // Vérifie si déjà une carte physique en cours
+    const { rows: existingPhysical } = await client.query(
+      'SELECT * FROM cards WHERE user_id = $1 AND type = $2 AND status IN ($3, $4)',
+      [userId, 'physical', 'pending', 'active']
+    );
+    if (existingPhysical.length > 0) {
+      return res.status(400).json({ error: "Vous avez déjà une carte physique en cours ou active." });
+    }
+
+    // Insère la demande de carte physique (status = pending)
+    await client.query(
+      `INSERT INTO cards (user_id, type, status, is_locked, requested_at)
+       VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)`,
+      [userId, 'physical', 'pending', false]
+    );
+
+    return res.json({ message: "Demande de carte physique enregistrée. Vous serez notifié lors de la validation." });
+  } catch (err) {
+    console.error('Erreur demande carte physique:', err);
+    return res.status(500).json({ error: 'Erreur serveur' });
+  } finally {
+    client.release();
+  }
+};
+
