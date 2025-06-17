@@ -797,32 +797,40 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Contact ou OTP manquant.' });
   }
 
-  // Normalisation du contact
+  // Normalisation stricte du contact
   const normalizedContact = isEmail
     ? contact.trim().toLowerCase()
     : contact.replace(/\D/g, '');
 
+  const client = await pool.connect();
   try {
+    await client.query('BEGIN');
+
     // 1. OTP Lookup
-    const otpRes = await pool.query(
+    const otpRes = await client.query(
       `SELECT * FROM otps WHERE contact_members = $1 ORDER BY expires_at DESC LIMIT 1`,
       [normalizedContact]
     );
-
     if (otpRes.rows.length === 0) {
+      await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Aucun code trouvé pour ce contact.' });
     }
     const { code, expires_at } = otpRes.rows[0];
-    if (code !== otp) return res.status(400).json({ error: 'Code incorrect.' });
-    if (new Date() > new Date(expires_at)) return res.status(400).json({ error: 'Code expiré.' });
+    if (code !== otp) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Code incorrect.' });
+    }
+    if (new Date() > new Date(expires_at)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Code expiré.' });
+    }
+    await client.query('DELETE FROM otps WHERE contact_members = $1', [normalizedContact]);
 
-    await pool.query('DELETE FROM otps WHERE contact_members = $1', [normalizedContact]);
-
-    // 2. User lookup (par email ou phone)
+    // 2. Recherche user existant
     const userQuery = isEmail
       ? `SELECT id, member_id FROM users WHERE LOWER(email) = $1`
       : `SELECT id, member_id FROM users WHERE phone = $1`;
-    const existing = await pool.query(userQuery, [normalizedContact]);
+    const existing = await client.query(userQuery, [normalizedContact]);
 
     const username = normalizedContact.replace(/[@.+-]/g, '_').slice(0, 20);
     const now = new Date();
@@ -831,57 +839,56 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
 
     if (existing.rows.length > 0) {
       userId = existing.rows[0].id;
-
       // Vérifie ou insère dans members
-      const memberCheck = await pool.query(
+      const memberCheck = await client.query(
         `SELECT id FROM members WHERE user_id = $1`,
         [userId]
       );
       if (memberCheck.rowCount === 0) {
         memberId = uuidv4();
-        await pool.query(
+        await client.query(
           `INSERT INTO members (id, user_id, display_name, contact, created_at, updated_at)
            VALUES ($1, $2, $3, $4, $5, $6)`,
           [memberId, userId, username, normalizedContact, now, now]
         );
-        await pool.query(
+        await client.query(
           `UPDATE users SET member_id = $1 WHERE id = $2`,
           [memberId, userId]
         );
       } else {
         memberId = memberCheck.rows[0].id;
         if (!existing.rows[0].member_id) {
-          await pool.query(
+          await client.query(
             `UPDATE users SET member_id = $1 WHERE id = $2`,
             [memberId, userId]
           );
         }
       }
-
+      await client.query('COMMIT');
       return res.status(200).json({ message: 'Utilisateur déjà inscrit.', userId, memberId });
     }
 
-    // 4. Créer nouvel utilisateur + membre
+    // Création utilisateur + membre
     userId = uuidv4();
     memberId = uuidv4();
-    await pool.query(
-      `INSERT INTO users (id, ${isEmail ? 'email' : 'phone'}, username, is_verified, created_at, member_id)
-       VALUES ($1, $2, $3, false, $4, $5)`,
-      [userId, normalizedContact, username, now, memberId]
+    await client.query(
+      `INSERT INTO users (id, username, is_verified, created_at, member_id)
+       VALUES ($1, $2, false, $3, $4)`,
+      [userId, username, now, memberId]
     );
-
-    await pool.query(
+    await client.query(
       `INSERT INTO members (id, user_id, display_name, contact, created_at, updated_at)
        VALUES ($1, $2, $3, $4, $5, $6)`,
       [memberId, userId, username, normalizedContact, now, now]
     );
+    await client.query('COMMIT');
 
     // 🎉 Message de bienvenue
     if (isEmail) {
       await sendEmail({
         to: contact,
         subject: 'Bienvenue sur Cash Hay',
-        text: 'Votre compte a été créé avec succès.'
+        text: 'Votre compte a été créé avec succès.',
       });
     } else {
       await sendSMS(contact, 'Bienvenue sur Cash Hay ! Votre compte a été créé.');
@@ -889,10 +896,14 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
 
     return res.status(200).json({ message: 'Inscription réussie.', userId, memberId });
   } catch (error) {
+    await client.query('ROLLBACK');
     console.error('❌ Erreur verifyOTPRegister :', error);
     return res.status(500).json({ error: 'Erreur serveur' });
+  } finally {
+    client.release();
   }
 };
+
 
 
 export const checkMember = async (req: Request, res: Response) => {
