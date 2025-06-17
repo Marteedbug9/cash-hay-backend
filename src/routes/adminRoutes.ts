@@ -9,10 +9,19 @@ router.get('/users', verifyToken, verifyAdmin, async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT
-        id, username, email, phone, role, is_verified, is_blacklisted, is_deceased,
-        identity_verified, created_at
-      FROM users
-      ORDER BY created_at DESC
+  u.id, u.username, u.email, u.phone, u.role, u.is_verified, u.is_blacklisted, u.is_deceased,
+  u.identity_verified, u.created_at,
+  pi.url as profile_photo,
+  u.face_url, u.document_url,
+  -- La dernière carte active
+  (SELECT card_number FROM cards WHERE user_id = u.id AND status = 'active' ORDER BY requested_at DESC LIMIT 1) as card_number,
+  (SELECT type FROM cards WHERE user_id = u.id AND status = 'active' ORDER BY requested_at DESC LIMIT 1) as card_type,
+  -- Premier contact membre
+  (SELECT contact FROM members WHERE user_id = u.id LIMIT 1) as member_contact
+FROM users u
+LEFT JOIN profile_images pi ON pi.user_id = u.id AND pi.is_current = true
+ORDER BY u.created_at DESC
+
     `);
     res.json(result.rows);
   } catch (err) {
