@@ -1,23 +1,78 @@
 import { Router } from 'express';
 import pool from '../config/db';
-import { verifyToken,verifyAdmin } from '../middlewares/verifyToken';
-
+import { verifyToken, verifyAdmin } from '../middlewares/verifyToken';
 
 const router = Router();
 
-// ➤ Voir tous les utilisateurs
+// ➤ Liste des utilisateurs (résumé)
 router.get('/users', verifyToken, verifyAdmin, async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT
-        id, username, email, role,
-        is_verified, is_blacklisted, is_deceased
+        id, username, email, phone, role, is_verified, is_blacklisted, is_deceased,
+        identity_verified, created_at
       FROM users
       ORDER BY created_at DESC
     `);
     res.json(result.rows);
   } catch (err) {
-    res.status(501).json({ error: 'Erreur serveur.' });
+    res.status(500).json({ error: 'Erreur serveur.' });
+  }
+});
+
+// ➤ Détail complet d’un utilisateur
+router.get('/users/:id', verifyToken, verifyAdmin, async (req, res) => {
+  const { id } = req.params;
+  try {
+    // Info user + photos + docs
+    const userResult = await pool.query(`
+      SELECT
+        u.id, u.username, u.email, u.first_name, u.last_name, u.address, u.phone,
+        u.birth_date, u.birth_country, u.birth_place, u.id_type, u.id_number,
+        u.id_issue_date, u.id_expiry_date, u.role, u.is_verified, u.identity_verified,
+        u.is_blacklisted, u.is_deceased, u.city, u.department, u.country, u.zip_code,
+        u.created_at, u.face_url, u.document_url,
+        pi.url as profile_photo
+      FROM users u
+      LEFT JOIN profile_images pi ON pi.user_id = u.id AND pi.is_current = true
+      WHERE u.id = $1
+    `, [id]);
+    if (userResult.rowCount === 0) return res.status(404).json({ error: "Utilisateur non trouvé." });
+    const user = userResult.rows[0];
+
+    // Contacts membres
+    const contacts = await pool.query(
+      `SELECT contact FROM members WHERE user_id = $1`, [id]
+    );
+    user.contacts = contacts.rows.map(c => c.contact);
+
+    // Cartes (virtuelles/physiques)
+    const cards = await pool.query(
+      `SELECT id, card_number, expiry_date, cvv, type, account_type, status, is_locked, requested_at, price
+       FROM cards WHERE user_id = $1 ORDER BY requested_at DESC`, [id]
+    );
+    user.cards = cards.rows;
+
+    // Historique transactions
+    const transactions = await pool.query(
+      `SELECT id, type, amount, currency, status, description, recipient_id, created_at
+       FROM transactions WHERE user_id = $1 OR recipient_id = $1
+       ORDER BY created_at DESC LIMIT 50`, [id]
+    );
+    user.transactions = transactions.rows;
+
+    // Audit logs
+    const logs = await pool.query(
+      `SELECT action, created_at, details, ip_address, user_agent
+       FROM audit_logs WHERE user_id = $1
+       ORDER BY created_at DESC LIMIT 20`, [id]
+    );
+    user.audit_logs = logs.rows;
+
+    res.json(user);
+  } catch (err) {
+    console.error('❌ Erreur récupération utilisateur :', err);
+    res.status(500).json({ error: 'Erreur serveur.' });
   }
 });
 
@@ -25,11 +80,12 @@ router.get('/users', verifyToken, verifyAdmin, async (req, res) => {
 router.patch('/users/:id/verify', verifyToken, verifyAdmin, async (req, res) => {
   const { id } = req.params;
   const { is_verified } = req.body;
-
   try {
+    await pool.query('UPDATE users SET is_verified = $1 WHERE id = $2', [is_verified, id]);
+    // Audit
     await pool.query(
-      'UPDATE users SET is_verified = $1 WHERE id = $2',
-      [is_verified, id]
+      `INSERT INTO audit_logs (user_id, action, details) VALUES ($1, $2, $3)`,
+      [id, 'update_verification', `is_verified: ${is_verified}`]
     );
     res.json({ message: `Utilisateur ${is_verified ? 'activé' : 'désactivé'} avec succès.` });
   } catch (err) {
@@ -41,11 +97,14 @@ router.patch('/users/:id/verify', verifyToken, verifyAdmin, async (req, res) => 
 router.patch('/users/:id/status', verifyToken, verifyAdmin, async (req, res) => {
   const { id } = req.params;
   const { is_blacklisted, is_deceased } = req.body;
-
   try {
     await pool.query(
       'UPDATE users SET is_blacklisted = $1, is_deceased = $2 WHERE id = $3',
       [is_blacklisted, is_deceased, id]
+    );
+    await pool.query(
+      `INSERT INTO audit_logs (user_id, action, details) VALUES ($1, $2, $3)`,
+      [id, 'update_status', `blacklisted: ${is_blacklisted}, deceased: ${is_deceased}`]
     );
     res.json({ message: 'Statut mis à jour avec succès.' });
   } catch (err) {
@@ -53,16 +112,13 @@ router.patch('/users/:id/status', verifyToken, verifyAdmin, async (req, res) => 
   }
 });
 
-
-
-// ✅ Validation manuelle d'identité
+// ➤ Valider identité
 router.patch('/users/:id/identity/validate', verifyToken, verifyAdmin, async (req, res) => {
   const { id } = req.params;
-
   try {
     const result = await pool.query(
-      `UPDATE users 
-       SET identity_verified = true, 
+      `UPDATE users
+       SET identity_verified = true,
            is_verified = true,
            verified_at = NOW(),
            identity_request_enabled = true
@@ -70,108 +126,107 @@ router.patch('/users/:id/identity/validate', verifyToken, verifyAdmin, async (re
        RETURNING id, username, email, identity_verified, is_verified, verified_at`,
       [id]
     );
-
-    if (result.rowCount === 0) {
-      return res.status(404).json({ error: "Utilisateur non trouvé." });
-    }
-
-    // 🔍 Log audit
+    if (result.rowCount === 0) return res.status(404).json({ error: "Utilisateur non trouvé." });
     await pool.query(
-      `INSERT INTO audit_logs (user_id, action, details)
-       VALUES ($1, $2, $3)`,
+      `INSERT INTO audit_logs (user_id, action, details) VALUES ($1, $2, $3)`,
       [id, 'validate_identity', 'Identité validée manuellement par admin']
     );
-
-    return res.status(200).json({
+    res.status(200).json({
       message: 'Identité validée avec succès.',
       user: result.rows[0],
     });
-
   } catch (err) {
-    console.error('❌ Erreur validation identité:', err);
-    res.status(504).json({ error: 'Erreur lors de la validation de l’identité.' });
+    res.status(504).json({ error: 'Erreur lors de la validation.' });
   }
 });
 
-
-// ➤ Réactivation soumission identité
+// ➤ Réactiver la soumission identité
 router.patch('/users/:id/identity/request-enable', verifyToken, verifyAdmin, async (req, res) => {
   const { id } = req.params;
-
   try {
     const result = await pool.query(
-      `UPDATE users 
-       SET identity_request_enabled = true 
-       WHERE id = $1
-       RETURNING id, username, identity_request_enabled`,
+      `UPDATE users SET identity_request_enabled = true WHERE id = $1 RETURNING id, username, identity_request_enabled`,
       [id]
     );
-
-    if (result.rowCount === 0) {
-      return res.status(404).json({ error: "Utilisateur non trouvé." });
-    }
-
-    // 🔍 Audit log
+    if (result.rowCount === 0) return res.status(404).json({ error: "Utilisateur non trouvé." });
     await pool.query(
-      `INSERT INTO audit_logs (user_id, action, details)
-       VALUES ($1, $2, $3)`,
+      `INSERT INTO audit_logs (user_id, action, details) VALUES ($1, $2, $3)`,
       [id, 'reactivate_identity_request', 'Réactivation manuelle de la soumission d’identité']
     );
-
-    res.json({
-      message: "Soumission d'identité réactivée.",
-      user: result.rows[0],
-    });
-
+    res.json({ message: "Soumission d'identité réactivée.", user: result.rows[0] });
   } catch (err) {
-    console.error('❌ Erreur réactivation soumission identité:', err);
     res.status(505).json({ error: "Erreur lors de la réactivation." });
   }
 });
 
-// ➤ Réactiver l'envoi d'identité (admin)
+// ➤ Réactiver vérification d'identité
 router.patch('/users/:id/identity/reactivate', verifyToken, verifyAdmin, async (req, res) => {
   const { id } = req.params;
-
   try {
+    await pool.query(`UPDATE users SET identity_request_enabled = true WHERE id = $1`, [id]);
     await pool.query(
-      `UPDATE users SET identity_request_enabled = true WHERE id = $1`,
-      [id]
+      `INSERT INTO audit_logs (user_id, action, details) VALUES ($1, $2, $3)`,
+      [id, 'identity_reactivation', 'Réactivation de l’envoi d’identité par admin']
     );
     res.json({ message: 'Réactivation de la vérification autorisée.' });
   } catch (err) {
-    console.error('❌ Erreur réactivation identité:', err);
     res.status(505).json({ error: 'Erreur lors de la réactivation.' });
   }
 });
 
-// ➤ Détails d’un utilisateur sans mot de passe ni documents
-router.get('/users/:id', verifyToken, verifyAdmin, async (req, res) => {
+// ➤ Voir toutes les cartes d'un user
+router.get('/users/:id/cards', verifyToken, verifyAdmin, async (req, res) => {
   const { id } = req.params;
-
   try {
-    const result = await pool.query(
-      `SELECT 
-         id, username, email, first_name, last_name, address, phone,
-         birth_date, birth_country, birth_place, id_type, id_number,
-         id_issue_date, id_expiry_date, role, is_verified, identity_verified,
-         is_blacklisted, is_deceased, city, department, country, zip_code,
-         created_at
-       FROM users
-       WHERE id = $1`,
-      [id]
+    const cards = await pool.query(
+      `SELECT id, card_number, expiry_date, cvv, type, account_type, status, is_locked, requested_at, price
+       FROM cards WHERE user_id = $1 ORDER BY requested_at DESC`, [id]
     );
-
-    if (result.rowCount === 0) {
-      return res.status(404).json({ error: 'Utilisateur non trouvé.' });
-    }
-
-    res.json(result.rows[0]);
+    res.json(cards.rows);
   } catch (err) {
-    console.error('❌ Erreur récupération utilisateur :', err);
-    res.status(500).json({ error: 'Erreur serveur lors de la récupération.' });
+    res.status(500).json({ error: 'Erreur chargement cartes.' });
   }
 });
 
+// ➤ Voir les audits d'un user
+router.get('/users/:id/audit', verifyToken, verifyAdmin, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const logs = await pool.query(
+      `SELECT action, created_at, details, ip_address, user_agent
+       FROM audit_logs WHERE user_id = $1
+       ORDER BY created_at DESC LIMIT 50`, [id]
+    );
+    res.json(logs.rows);
+  } catch (err) {
+    res.status(500).json({ error: 'Erreur audit.' });
+  }
+});
+
+// ➤ Voir l’historique de connexion d'un user
+router.get('/users/:id/logins', verifyToken, verifyAdmin, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const logins = await pool.query(
+      `SELECT ip_address, created_at FROM login_history WHERE user_id = $1 ORDER BY created_at DESC LIMIT 20`, [id]
+    );
+    res.json(logins.rows);
+  } catch (err) {
+    res.status(500).json({ error: 'Erreur login history.' });
+  }
+});
+
+// ➤ Voir tous les membres d'un user (contacts)
+router.get('/users/:id/contacts', verifyToken, verifyAdmin, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const contacts = await pool.query(
+      `SELECT display_name, contact, created_at FROM members WHERE user_id = $1 ORDER BY created_at DESC`, [id]
+    );
+    res.json(contacts.rows);
+  } catch (err) {
+    res.status(500).json({ error: 'Erreur contacts.' });
+  }
+});
 
 export default router;
