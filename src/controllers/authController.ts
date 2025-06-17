@@ -500,97 +500,88 @@ export const confirmSuspiciousAttempt: RequestHandler = async (req: Request, res
 };
 
 // ➤ Vérification OTP après login
-export const verifyOTP: RequestHandler = async (req: Request, res: Response) => {
-  const { userId, code, contact } = req.body; // contact est obligatoire pour lier le membre
 
-  if (!userId || !code || !contact) {
-    return res.status(400).json({ error: 'ID utilisateur, code et contact requis.' });
+export const verifyOTP: RequestHandler = async (req: Request, res: Response)  => {
+  const { userId, code } = req.body;
+
+  if (!userId || !code) {
+    return res.status(400).json({ error: 'ID utilisateur et code requis.' });
   }
 
   try {
-    // 1. Vérifier OTP
     const otpRes = await pool.query(
       'SELECT code, expires_at FROM otps WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1',
       [userId]
     );
+
     if (otpRes.rows.length === 0) {
+      console.log('⛔ Aucun code OTP trouvé pour cet utilisateur');
       return res.status(400).json({ valid: false, reason: 'Expired or invalid code.' });
     }
+
     const { code: storedCode, expires_at } = otpRes.rows[0];
-    if (String(code).trim() !== String(storedCode).trim()) {
-      return res.status(400).json({ error: 'Code invalide.' });
-    }
-    if (new Date() > new Date(expires_at)) {
+    const now = new Date();
+
+    if (now > new Date(expires_at)) {
+      console.log('⏰ Code OTP expiré');
       return res.status(400).json({ valid: false, reason: 'Code expiré.' });
     }
 
-    // 2. Marquer comme vérifié + supprimer les OTP anciens
-    await pool.query('UPDATE users SET is_otp_verified = true WHERE id = $1', [userId]);
-    await pool.query('DELETE FROM otps WHERE user_id = $1', [userId]);
+    const receivedCode = String(code).trim();
+    const expectedCode = String(storedCode).trim();
 
-    // 3. Gérer le membership : on prend le contact pour créer un membre si pas déjà existant
-    const normalizedContact = contact.trim().toLowerCase();
-    let userRes = await pool.query('SELECT * FROM users WHERE id = $1', [userId]);
-    let user = userRes.rows[0];
+    console.log(`📥 Code reçu: "${receivedCode}" (longueur: ${receivedCode.length})`);
+    console.log(`📦 Code attendu: "${expectedCode}" (longueur: ${expectedCode.length})`);
 
-    // On vérifie s’il est déjà membre
-    let memberId = user.member_id;
-    if (!memberId) {
-      // Cherche un membre existant avec ce contact
-      const memberRes = await pool.query(
-        'SELECT id FROM members WHERE contact = $1',
-        [normalizedContact]
-      );
-      if (memberRes.rows.length > 0) {
-        memberId = memberRes.rows[0].id;
-      } else {
-        // Créer nouveau membre
-        memberId = uuidv4();
-        await pool.query(
-          `INSERT INTO members (id, user_id, display_name, contact, created_at, updated_at)
-           VALUES ($1, $2, $3, $4, NOW(), NOW())`,
-          [memberId, userId, user.username || normalizedContact, normalizedContact]
-        );
-      }
-      // Mise à jour user.member_id
-      await pool.query('UPDATE users SET member_id = $1 WHERE id = $2', [memberId, userId]);
-      // Recharger user pour retour propre
-      userRes = await pool.query('SELECT * FROM users WHERE id = $1', [userId]);
-      user = userRes.rows[0];
+    if (receivedCode !== expectedCode) {
+      console.log('❌ Code incorrect (comparaison échouée)');
+      return res.status(400).json({ error: 'Code invalide.' });
     }
 
-    // 4. Générer token
+    // ✅ Marquer l’utilisateur comme vérifié
+    await pool.query(
+      'UPDATE users SET is_otp_verified = true WHERE id = $1',
+      [userId]
+    );
+
+    // ✅ Supprimer les OTP anciens
+    await pool.query('DELETE FROM otps WHERE user_id = $1', [userId]);
+
+    // 🔁 Regénérer le token
+    const userRes = await pool.query('SELECT * FROM users WHERE id = $1', [userId]);
+    const user = userRes.rows[0];
     const token = jwt.sign(
       { id: user.id, email: user.email, role: user.role },
       process.env.JWT_SECRET || 'devsecretkey',
       { expiresIn: '24h' }
     );
 
+    console.log('✅ Code OTP validé avec succès');
+
     return res.status(200).json({
-      token,
-      user: {
-        id: user.id,
-        username: user.username,
-        email: user.email,
-        phone: user.phone,
-        first_name: user.first_name,
-        last_name: user.last_name,
-        photo_url: user.photo_url || null,
-        is_verified: user.is_verified || false,
-        is_otp_verified: true,
-        identity_verified: user.identity_verified || false,
-        identity_request_enabled: user.identity_request_enabled ?? true,
-        role: user.role || 'user',
-        member_id: user.member_id,
-      },
-    });
+  token,
+  user: {
+  id: user.id,
+  username: user.username,
+  email: user.email,
+  phone: user.phone,
+  first_name: user.first_name,
+  last_name: user.last_name,
+  photo_url: user.photo_url || null,
+  is_verified: user.is_verified || false,
+  is_otp_verified: true,
+  identity_verified: user.identity_verified || false,
+  identity_request_enabled: user.identity_request_enabled ?? true,
+  role: user.role || 'user',
+}
+
+});
 
   } catch (err: any) {
     console.error('❌ Erreur vérification OTP:', err.message);
     return res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
-
 
 // ➤ Vérification  validation ID
 export const validateIdentity = async (req: Request, res: Response) => {
@@ -721,18 +712,23 @@ export const searchUserByContact = async (req: Request, res: Response) => {
 };
 
 
+// 1️⃣ ENVOI OTP
 export const sendOTPRegister = async (req: Request, res: Response) => {
   const { contact } = req.body;
   if (!contact) return res.status(400).json({ error: 'Contact requis' });
 
   const isEmail = contact.includes('@');
-  const now = new Date();
+  // Normalisation du contact
+  const normalizedContact = isEmail
+    ? contact.trim().toLowerCase()
+    : contact.replace(/\D/g, '');
 
+  const now = new Date();
   try {
-    // 1. Chercher s'il y a un OTP actif
+    // Vérifier OTP actif
     const otpQuery = await pool.query(
       `SELECT * FROM otps WHERE contact_members = $1 AND expires_at > $2`,
-      [contact, now]
+      [normalizedContact, now]
     );
     const activeOtp = otpQuery.rows[0];
 
@@ -740,33 +736,30 @@ export const sendOTPRegister = async (req: Request, res: Response) => {
     let expiresAt: Date;
 
     if (activeOtp) {
-      // Il existe déjà un OTP actif pour ce contact
       otp = activeOtp.code;
       expiresAt = activeOtp.expires_at;
     } else {
-      // On génère un nouveau code car aucun OTP actif
       otp = generateOTP();
       expiresAt = new Date(Date.now() + 5 * 60 * 1000);
 
-      // Associer l'OTP à un user_id si existant
+      // Associer l’OTP à user_id si existant
       const userInfo = await pool.query(
         `SELECT * FROM users WHERE ${isEmail ? 'email' : 'phone'} = $1`,
-        [contact]
+        [normalizedContact]
       );
       const existingUser = userInfo.rows[0];
       const existingId = existingUser?.id || null;
 
-      // Insert ou update l'OTP
       await pool.query(
         `INSERT INTO otps (user_id, contact_members, code, expires_at)
          VALUES ($1, $2, $3, $4)
-         ON CONFLICT (contact_members) DO UPDATE 
+         ON CONFLICT (contact_members) DO UPDATE
          SET code = EXCLUDED.code, expires_at = EXCLUDED.expires_at`,
-        [existingId, contact, otp, expiresAt]
+        [existingId, normalizedContact, otp, expiresAt]
       );
     }
 
-    // Envoi OTP UNIQUEMENT si nouvel OTP généré ou si demandé explicitement (ex: changement de contact)
+    // Envoi OTP seulement si non actif
     if (!activeOtp) {
       if (isEmail) {
         await sendEmail({
@@ -794,6 +787,8 @@ export const sendOTPRegister = async (req: Request, res: Response) => {
 
 
 
+
+// 2️⃣ VERIF OTP + CRÉATION MEMBRE + INSERT ID DANS USERS
 export const verifyOTPRegister = async (req: Request, res: Response) => {
   const { contact, otp } = req.body;
   const isEmail = contact.includes('@');
@@ -802,10 +797,13 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Contact ou OTP manquant.' });
   }
 
+  // Normalisation du contact
+  const normalizedContact = isEmail
+    ? contact.trim().toLowerCase()
+    : contact.replace(/\D/g, '');
+
   try {
     // 1. OTP Lookup
-    const normalizedContact = contact.trim().toLowerCase();
-
     const otpRes = await pool.query(
       `SELECT * FROM otps WHERE contact_members = $1 ORDER BY expires_at DESC LIMIT 1`,
       [normalizedContact]
@@ -814,14 +812,13 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
     if (otpRes.rows.length === 0) {
       return res.status(400).json({ error: 'Aucun code trouvé pour ce contact.' });
     }
-
     const { code, expires_at } = otpRes.rows[0];
     if (code !== otp) return res.status(400).json({ error: 'Code incorrect.' });
     if (new Date() > new Date(expires_at)) return res.status(400).json({ error: 'Code expiré.' });
 
     await pool.query('DELETE FROM otps WHERE contact_members = $1', [normalizedContact]);
 
-    // 2. User lookup (par email ou phone normalisé)
+    // 2. User lookup (par email ou phone)
     const userQuery = isEmail
       ? `SELECT id, member_id FROM users WHERE LOWER(email) = $1`
       : `SELECT id, member_id FROM users WHERE phone = $1`;
@@ -835,7 +832,7 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
     if (existing.rows.length > 0) {
       userId = existing.rows[0].id;
 
-      // 3. Vérifie/insère dans members
+      // Vérifie ou insère dans members
       const memberCheck = await pool.query(
         `SELECT id FROM members WHERE user_id = $1`,
         [userId]
@@ -847,22 +844,18 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
            VALUES ($1, $2, $3, $4, $5, $6)`,
           [memberId, userId, username, normalizedContact, now, now]
         );
-        // Met à jour le user avec le nouveau memberId
         await pool.query(
           `UPDATE users SET member_id = $1 WHERE id = $2`,
           [memberId, userId]
         );
-        console.log('✅ Membre créé pour userId:', userId);
       } else {
         memberId = memberCheck.rows[0].id;
-        // Si pas encore lié côté users, on le set
         if (!existing.rows[0].member_id) {
           await pool.query(
             `UPDATE users SET member_id = $1 WHERE id = $2`,
             [memberId, userId]
           );
         }
-        console.log('ℹ️ Membre déjà existant pour userId:', userId);
       }
 
       return res.status(200).json({ message: 'Utilisateur déjà inscrit.', userId, memberId });
@@ -900,6 +893,7 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
     return res.status(500).json({ error: 'Erreur serveur' });
   }
 };
+
 
 export const checkMember = async (req: Request, res: Response) => {
   try {
