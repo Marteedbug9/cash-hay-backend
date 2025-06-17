@@ -19,6 +19,8 @@ import {
 } from '../controllers/authController';
 import upload from '../middlewares/upload';
 import { verifyToken } from '../middlewares/verifyToken';
+import pool from '../config/db';
+
 
 const router = Router();
 
@@ -63,5 +65,32 @@ router.post('/confirm-suspicious-attempt', confirmSuspiciousAttempt);
 
 // Photo de profil
 router.post('/upload-profile-image', verifyToken, upload.single('image'), uploadProfileImage);
+
+
+router.post('/check-unique', async (req, res) => {
+  const { field, value } = req.body;
+  if (!field || !value) {
+    return res.status(400).json({ error: 'Champ et valeur requis.' });
+  }
+  try {
+    let exists = false;
+    if (field === 'username') {
+      const result = await pool.query('SELECT 1 FROM users WHERE username = $1', [value]);
+      exists = !!result.rowCount;
+    }
+    if (field === 'email') {
+      const result = await pool.query('SELECT 1 FROM users WHERE email = $1', [value]);
+      exists = !!result.rowCount;
+    }
+    if (field === 'phone') {
+      const result = await pool.query('SELECT 1 FROM users WHERE phone = $1', [value]);
+      exists = !!result.rowCount;
+    }
+    return res.json({ isUnique: !exists });
+  } catch (err) {
+    console.error('Erreur check-unique:', err);
+    return res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
 
 export default router;
