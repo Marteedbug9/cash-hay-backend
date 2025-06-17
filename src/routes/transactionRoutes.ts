@@ -10,8 +10,6 @@ import {
   acceptRequest,
   cancelRequest,
   getMonthlyStatement,
- 
-  // updateBalance
 } from '../controllers/transactionController';
 import { verifyToken } from '../middlewares/verifyToken';
 import { verifyMember } from '../middlewares/verifyMember';
@@ -24,32 +22,28 @@ router.get('/balance', verifyToken, getBalance);
 // 📜 Historique des transactions
 router.get('/', verifyToken, getTransactions);
 
-// ➕ Dépôt (option : protège par verifyMember aussi)
+// ➕ Dépôt (protégé)
 router.post('/deposit', verifyToken, verifyMember, deposit);
 
 // ➖ Retrait
 router.post('/withdraw', verifyToken, verifyMember, withdraw);
 
-// 🔁 Transfert entre utilisateurs
+// 🔁 Transfert
 router.post('/transfer', verifyToken, verifyMember, transfer);
 
-// 📝 Création manuelle d'une transaction (option : protège par verifyMember ?)
+// 📝 Création manuelle d'une transaction
 router.post('/', verifyToken, verifyMember, createTransaction);
 
-// 📥 Demander de l’argent
+// 📥 Demande d’argent
 router.post('/request', verifyToken, verifyMember, requestMoney);
 
 // ✅ Accepter une demande
 router.post('/accept-request/:id', verifyToken, verifyMember, acceptRequest);
 
-// ❌ Refuser ou annuler une demande
+// ❌ Annuler une demande
 router.post('/cancel-request/:id', verifyToken, verifyMember, cancelRequest);
 
-
-
-
-router.get('/transactions/statement', verifyToken, getMonthlyStatement);
-// 🔧 Route manquante ?
-// router.post('/update-balance', verifyToken, verifyMember, updateBalance);
+// 📄 Relevé PDF
+router.get('/statement', verifyToken, getMonthlyStatement);
 
 export default router;

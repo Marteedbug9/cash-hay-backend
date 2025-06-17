@@ -1,4 +1,3 @@
-// src/middlewares/verifyMember.ts
 import { Request, Response, NextFunction } from 'express';
 import pool from '../config/db';
 
@@ -9,7 +8,7 @@ export const verifyMember = async (req: Request, res: Response, next: NextFuncti
       return res.status(401).json({ error: "Authentification requise." });
     }
 
-    // Vérifier que le user possède un member_id et qu’il existe dans members
+    // Vérifie que le user possède un member_id qui existe dans members
     const { rows } = await pool.query(
       `SELECT m.id AS member_id
          FROM users u
@@ -22,10 +21,9 @@ export const verifyMember = async (req: Request, res: Response, next: NextFuncti
       return res.status(403).json({ error: "Vous devez être membre Cash Hay." });
     }
 
-    next();
+    next(); // tout est bon, il est membre
   } catch (err) {
     console.error('❌ Erreur verifyMember:', err);
     return res.status(500).json({ error: 'Erreur serveur de vérification membership.' });
   }
 };
-

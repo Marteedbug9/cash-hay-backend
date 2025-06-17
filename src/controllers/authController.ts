@@ -912,24 +912,30 @@ export const checkMember = async (req: Request, res: Response) => {
     if (!userId) return res.status(401).json({ error: 'Token utilisateur manquant.' });
 
     const userRes = await pool.query('SELECT member_id FROM users WHERE id = $1', [userId]);
-    const memberId = userRes.rows[0]?.member_id;
-
+    let memberId = userRes.rows[0]?.member_id || null;
     let exists = false;
 
     if (memberId) {
       const memberRes = await pool.query('SELECT 1 FROM members WHERE id = $1', [memberId]);
       exists = (memberRes.rowCount ?? 0) > 0;
+      if (!exists) memberId = null;
     } else {
-      const result = await pool.query('SELECT 1 FROM members WHERE user_id = $1', [userId]);
-      exists = (result.rowCount ?? 0) > 0;
+      // Fallback : recherche d’un membre lié au user_id
+      const result = await pool.query('SELECT id FROM members WHERE user_id = $1', [userId]);
+      if ((result.rowCount ?? 0) > 0) {
+  exists = true;
+  memberId = result.rows[0].id;
+}
     }
 
-    return res.status(200).json({ exists });
+    // ✅ Toujours retourner exists ET memberId
+    return res.status(200).json({ exists, memberId });
   } catch (error) {
     console.error('❌ Erreur checkMember :', error);
     return res.status(500).json({ error: 'Erreur serveur' });
   }
 };
+
 
 
 export const savePushToken = async (req: Request, res: Response) => {
