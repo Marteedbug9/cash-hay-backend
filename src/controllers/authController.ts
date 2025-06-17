@@ -69,24 +69,24 @@ export const register = async (req: Request, res: Response) => {
 
     // 1. USERS
     await client.query(
-      `INSERT INTO users (
-        id, first_name, last_name, gender, address, city, department, zip_code, country,
-        email, phone, birth_date, birth_country, birth_place,
-        id_type, id_number, id_issue_date, id_expiry_date,
-        username, password_hash, role, accept_terms, recovery_code, member_id
-      ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9,
-        $10, $11, $12, $13, $14,
-        $15, $16, $17, $18,
-        $19, $20, $21, $22, $23, $24
-      )`,
-      [
-        userId, first_name, last_name, gender, address, city, department, zip_code, country,
-        email, phone, birth_date, birth_country, birth_place,
-        id_type, id_number, id_issue_date, id_expiry_date,
-        username, hashedPassword, 'user', true, recoveryCode, memberId
-      ]
-    );
+  `INSERT INTO users (
+    id, first_name, last_name, gender, address, city, department, zip_code, country,
+    email, phone, birth_date, birth_country, birth_place,
+    id_type, id_number, id_issue_date, id_expiry_date,
+    username, password_hash, role, accept_terms, recovery_code
+  ) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, $9,
+    $10, $11, $12, $13, $14,
+    $15, $16, $17, $18,
+    $19, $20, $21, $22, $23
+  )`,
+  [
+    userId, first_name, last_name, gender, address, city, department, zip_code, country,
+    email, phone, birth_date, birth_country, birth_place,
+    id_type, id_number, id_issue_date, id_expiry_date,
+    username, hashedPassword, 'user', true, recoveryCode
+  ]
+);
 
     // Après la création du nouvel utilisateur (userId)...
    
