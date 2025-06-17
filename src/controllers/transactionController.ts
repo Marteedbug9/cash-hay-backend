@@ -308,28 +308,30 @@ export const transfer = async (req: Request, res: Response) => {
     try {
       await client.query('BEGIN');
 
-      // Trouver recipient user (par email ou phone dans members, puis users)
-      const cleanedRecipient = recipientUsername.trim().toLowerCase();
-      const isEmail = cleanedRecipient.includes('@');
+      // --- Recherche contact member (email/téléphone) ---
+      const cleanedContact = recipientUsername.trim().toLowerCase();
       let memberRes;
-      if (isEmail) {
+      if (cleanedContact.includes('@')) {
+        // Recherche stricte email (toujours minuscule)
         memberRes = await client.query(
-          'SELECT id, contact FROM members WHERE LOWER(contact) = $1',
-          [cleanedRecipient]
+          'SELECT id FROM members WHERE LOWER(contact) = $1',
+          [cleanedContact]
         );
       } else {
-        const onlyDigits = cleanedRecipient.replace(/\D/g, '');
+        // Recherche téléphone (8 chiffres ou format international)
+        const digits = cleanedContact.replace(/\D/g, '');
         memberRes = await client.query(
-          `SELECT id, contact FROM members
+          `SELECT id FROM members
            WHERE
              REPLACE(REPLACE(REPLACE(contact, '+', ''), ' ', ''), '-', '') = $1
              OR RIGHT(REPLACE(REPLACE(REPLACE(contact, '+', ''), ' ', ''), '-', ''), 8) = $2`,
-          [onlyDigits, onlyDigits.slice(-8)]
+          [digits, digits.slice(-8)]
         );
       }
+
       if (!memberRes.rows.length) {
         await client.query('ROLLBACK');
-        return res.status(404).json({ error: 'Destinataire introuvable.' });
+        return res.status(404).json({ error: 'Destinataire introuvable ou non inscrit.' });
       }
       const memberId = memberRes.rows[0].id;
       const recipientUserRes = await client.query(
@@ -341,6 +343,12 @@ export const transfer = async (req: Request, res: Response) => {
         return res.status(404).json({ error: 'Aucun utilisateur lié à ce membre.' });
       }
       const recipientId = recipientUserRes.rows[0].id;
+
+      // Empêcher auto-transfert
+      if (recipientId === senderId) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'Impossible de vous envoyer de l’argent à vous-même.' });
+      }
 
       // Vérifier balance + frais
       const senderBalanceRes = await client.query(
@@ -393,15 +401,20 @@ export const transfer = async (req: Request, res: Response) => {
       await client.query('COMMIT');
 
       // Email destinataire (asynchrone)
-      const recipientRes = await pool.query('SELECT email FROM users WHERE id = $1', [recipientId]);
-      const recipientEmail = recipientRes.rows[0]?.email;
-      if (recipientEmail) {
-        await sendEmail({
-          to: recipientEmail,
-          subject: 'Transfert reçu - Cash Hay',
-          text: `Vous avez reçu ${amount} HTG via Cash Hay.`
+      pool.query('SELECT email FROM users WHERE id = $1', [recipientId])
+        .then(res => {
+          const email = res.rows[0]?.email;
+          if (email) {
+            sendEmail({
+              to: email,
+              subject: 'Transfert reçu - Cash Hay',
+              text: `Vous avez reçu ${amount} HTG via Cash Hay.`
+            });
+          }
+        })
+        .catch(e => {
+          console.error('Erreur notif email:', e);
         });
-      }
 
       return res.status(200).json({ message: 'Transfert effectué avec succès.' });
 
@@ -415,6 +428,7 @@ export const transfer = async (req: Request, res: Response) => {
     return res.status(500).json({ error: 'Erreur serveur lors du transfert.' });
   }
 };
+
 
 
 export const getBalance = async (req: Request, res: Response) => {
@@ -451,6 +465,8 @@ export const requestMoney = async (req: Request, res: Response) => {
   const { recipientUsername, amount } = req.body;
   const ip_address = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '';
   const user_agent = req.headers['user-agent'] || '';
+  const cleanedContact = recipientUsername.trim().toLowerCase();
+let memberRes;
 
   if (!recipientUsername || !amount || isNaN(amount) || amount <= 0) {
     return res.status(400).json({ error: 'Données invalides.' });
@@ -462,10 +478,23 @@ export const requestMoney = async (req: Request, res: Response) => {
       await client.query('BEGIN');
 
       // Trouve le member puis le user destinataire
-      const memberRes = await client.query(
-        'SELECT id FROM members WHERE contact = $1',
-        [recipientUsername]
-      );
+      if (cleanedContact.includes('@')) {
+  // Recherche stricte email (toujours minuscule)
+  memberRes = await client.query(
+    'SELECT id FROM members WHERE LOWER(contact) = $1',
+    [cleanedContact]
+  );
+} else {
+  // Recherche téléphone (8 chiffres ou format international)
+  const digits = cleanedContact.replace(/\D/g, '');
+  memberRes = await client.query(
+    `SELECT id FROM members
+     WHERE 
+       REPLACE(REPLACE(REPLACE(contact, '+', ''), ' ', ''), '-', '') = $1
+       OR RIGHT(REPLACE(REPLACE(REPLACE(contact, '+', ''), ' ', ''), '-', ''), 8) = $2`,
+    [digits, digits.slice(-8)]
+  );
+}
       if (memberRes.rows.length === 0) {
         await client.query('ROLLBACK');
         return res.status(404).json({ error: 'Destinataire introuvable ou non inscrit.' });
