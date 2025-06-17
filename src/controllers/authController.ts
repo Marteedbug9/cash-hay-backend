@@ -500,88 +500,97 @@ export const confirmSuspiciousAttempt: RequestHandler = async (req: Request, res
 };
 
 // ➤ Vérification OTP après login
+export const verifyOTP: RequestHandler = async (req: Request, res: Response) => {
+  const { userId, code, contact } = req.body; // contact est obligatoire pour lier le membre
 
-export const verifyOTP: RequestHandler = async (req: Request, res: Response)  => {
-  const { userId, code } = req.body;
-
-  if (!userId || !code) {
-    return res.status(400).json({ error: 'ID utilisateur et code requis.' });
+  if (!userId || !code || !contact) {
+    return res.status(400).json({ error: 'ID utilisateur, code et contact requis.' });
   }
 
   try {
+    // 1. Vérifier OTP
     const otpRes = await pool.query(
       'SELECT code, expires_at FROM otps WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1',
       [userId]
     );
-
     if (otpRes.rows.length === 0) {
-      console.log('⛔ Aucun code OTP trouvé pour cet utilisateur');
       return res.status(400).json({ valid: false, reason: 'Expired or invalid code.' });
     }
-
     const { code: storedCode, expires_at } = otpRes.rows[0];
-    const now = new Date();
-
-    if (now > new Date(expires_at)) {
-      console.log('⏰ Code OTP expiré');
+    if (String(code).trim() !== String(storedCode).trim()) {
+      return res.status(400).json({ error: 'Code invalide.' });
+    }
+    if (new Date() > new Date(expires_at)) {
       return res.status(400).json({ valid: false, reason: 'Code expiré.' });
     }
 
-    const receivedCode = String(code).trim();
-    const expectedCode = String(storedCode).trim();
-
-    console.log(`📥 Code reçu: "${receivedCode}" (longueur: ${receivedCode.length})`);
-    console.log(`📦 Code attendu: "${expectedCode}" (longueur: ${expectedCode.length})`);
-
-    if (receivedCode !== expectedCode) {
-      console.log('❌ Code incorrect (comparaison échouée)');
-      return res.status(400).json({ error: 'Code invalide.' });
-    }
-
-    // ✅ Marquer l’utilisateur comme vérifié
-    await pool.query(
-      'UPDATE users SET is_otp_verified = true WHERE id = $1',
-      [userId]
-    );
-
-    // ✅ Supprimer les OTP anciens
+    // 2. Marquer comme vérifié + supprimer les OTP anciens
+    await pool.query('UPDATE users SET is_otp_verified = true WHERE id = $1', [userId]);
     await pool.query('DELETE FROM otps WHERE user_id = $1', [userId]);
 
-    // 🔁 Regénérer le token
-    const userRes = await pool.query('SELECT * FROM users WHERE id = $1', [userId]);
-    const user = userRes.rows[0];
+    // 3. Gérer le membership : on prend le contact pour créer un membre si pas déjà existant
+    const normalizedContact = contact.trim().toLowerCase();
+    let userRes = await pool.query('SELECT * FROM users WHERE id = $1', [userId]);
+    let user = userRes.rows[0];
+
+    // On vérifie s’il est déjà membre
+    let memberId = user.member_id;
+    if (!memberId) {
+      // Cherche un membre existant avec ce contact
+      const memberRes = await pool.query(
+        'SELECT id FROM members WHERE contact = $1',
+        [normalizedContact]
+      );
+      if (memberRes.rows.length > 0) {
+        memberId = memberRes.rows[0].id;
+      } else {
+        // Créer nouveau membre
+        memberId = uuidv4();
+        await pool.query(
+          `INSERT INTO members (id, user_id, display_name, contact, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, NOW(), NOW())`,
+          [memberId, userId, user.username || normalizedContact, normalizedContact]
+        );
+      }
+      // Mise à jour user.member_id
+      await pool.query('UPDATE users SET member_id = $1 WHERE id = $2', [memberId, userId]);
+      // Recharger user pour retour propre
+      userRes = await pool.query('SELECT * FROM users WHERE id = $1', [userId]);
+      user = userRes.rows[0];
+    }
+
+    // 4. Générer token
     const token = jwt.sign(
       { id: user.id, email: user.email, role: user.role },
       process.env.JWT_SECRET || 'devsecretkey',
       { expiresIn: '24h' }
     );
 
-    console.log('✅ Code OTP validé avec succès');
-
     return res.status(200).json({
-  token,
-  user: {
-  id: user.id,
-  username: user.username,
-  email: user.email,
-  phone: user.phone,
-  first_name: user.first_name,
-  last_name: user.last_name,
-  photo_url: user.photo_url || null,
-  is_verified: user.is_verified || false,
-  is_otp_verified: true,
-  identity_verified: user.identity_verified || false,
-  identity_request_enabled: user.identity_request_enabled ?? true,
-  role: user.role || 'user',
-}
-
-});
+      token,
+      user: {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        phone: user.phone,
+        first_name: user.first_name,
+        last_name: user.last_name,
+        photo_url: user.photo_url || null,
+        is_verified: user.is_verified || false,
+        is_otp_verified: true,
+        identity_verified: user.identity_verified || false,
+        identity_request_enabled: user.identity_request_enabled ?? true,
+        role: user.role || 'user',
+        member_id: user.member_id,
+      },
+    });
 
   } catch (err: any) {
     console.error('❌ Erreur vérification OTP:', err.message);
     return res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
+
 
 // ➤ Vérification  validation ID
 export const validateIdentity = async (req: Request, res: Response) => {
