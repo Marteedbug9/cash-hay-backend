@@ -9,19 +9,23 @@ export const verifyMember = async (req: Request, res: Response, next: NextFuncti
       return res.status(401).json({ error: "Authentification requise." });
     }
 
-    // Vérifie via users.member_id
+    // Vérifier que le user possède un member_id et qu’il existe dans members
     const { rows } = await pool.query(
-      'SELECT member_id FROM users WHERE id = $1',
+      `SELECT m.id AS member_id
+         FROM users u
+         JOIN members m ON u.member_id = m.id
+        WHERE u.id = $1`,
       [userId]
     );
-    const hasMemberId = rows[0]?.member_id !== null && rows[0]?.member_id !== undefined && rows[0]?.member_id !== '';
 
-    if (!hasMemberId) {
+    if (!rows.length) {
       return res.status(403).json({ error: "Vous devez être membre Cash Hay." });
     }
+
     next();
   } catch (err) {
     console.error('❌ Erreur verifyMember:', err);
     return res.status(500).json({ error: 'Erreur serveur de vérification membership.' });
   }
 };
+
