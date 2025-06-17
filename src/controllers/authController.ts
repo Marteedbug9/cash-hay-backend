@@ -900,36 +900,36 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
 
     if (existing.rows.length > 0) {
       userId = existing.rows[0].id;
-      // Vérifie ou insère dans members
+
+      // Vérifie s’il y a déjà un member pour ce user_id
       const memberCheck = await client.query(
         `SELECT id FROM members WHERE user_id = $1`,
         [userId]
       );
+
       if (memberCheck.rowCount === 0) {
+        // S'il n'existe PAS, on l'insère (première fois quickregister)
         memberId = uuidv4();
         await client.query(
           `INSERT INTO members (id, user_id, display_name, contact, created_at, updated_at)
            VALUES ($1, $2, $3, $4, $5, $6)`,
           [memberId, userId, username, normalizedContact, now, now]
         );
+        // On update user.member_id aussi
         await client.query(
           `UPDATE users SET member_id = $1 WHERE id = $2`,
           [memberId, userId]
         );
       } else {
+        // Si déjà un member, on NE touche à rien !
         memberId = memberCheck.rows[0].id;
-        if (!existing.rows[0].member_id) {
-          await client.query(
-            `UPDATE users SET member_id = $1 WHERE id = $2`,
-            [memberId, userId]
-          );
-        }
       }
+
       await client.query('COMMIT');
       return res.status(200).json({ message: 'Utilisateur déjà inscrit.', userId, memberId });
     }
 
-    // Création utilisateur + membre
+    // --- Création nouvel utilisateur + membre ---
     userId = uuidv4();
     memberId = uuidv4();
     await client.query(
@@ -967,6 +967,7 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
 
 
 
+
 // ✅ checkMember doit bien renvoyer aussi memberId si existant
 export const checkMember = async (req: Request, res: Response) => {
   try {
@@ -974,22 +975,26 @@ export const checkMember = async (req: Request, res: Response) => {
     if (!userId) return res.status(401).json({ error: 'Token utilisateur manquant.' });
 
     const userRes = await pool.query('SELECT member_id FROM users WHERE id = $1', [userId]);
+    if (userRes.rowCount === 0) {
+      return res.status(404).json({ error: 'Utilisateur introuvable.' });
+    }
     const memberId = userRes.rows[0]?.member_id;
 
     let exists = false;
+if (memberId) {
+  const memberRes = await pool.query('SELECT 1 FROM members WHERE id = $1', [memberId]);
+  exists = Boolean(memberRes && typeof memberRes.rowCount === 'number' && memberRes.rowCount > 0);
+}
 
-    if (memberId) {
-      const memberRes = await pool.query('SELECT 1 FROM members WHERE id = $1', [memberId]);
-      exists = (memberRes.rowCount ?? 0) > 0;
-    }
 
-    // 🔑 Très important : renvoyer { exists, memberId } pour le frontend !
-    return res.status(200).json({ exists, memberId });
+    return res.status(200).json({ exists, memberId: memberId ?? null });
   } catch (error) {
     console.error('❌ Erreur checkMember :', error);
     return res.status(500).json({ error: 'Erreur serveur' });
   }
 };
+
+
 
 
 
