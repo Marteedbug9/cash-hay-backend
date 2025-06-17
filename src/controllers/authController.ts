@@ -612,14 +612,18 @@ export const uploadProfileImage = async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Aucune image reçue' });
     }
 
+    // Nomme chaque image par UUID unique (pas par user, pour garder l’historique Cloudinary)
+    const public_id = `profile_${userId}_${uuidv4()}`;
+
     const uploadFromBuffer = (fileBuffer: Buffer): Promise<any> => {
       return new Promise((resolve, reject) => {
         const stream = cloudinary.uploader.upload_stream(
           {
             folder: 'cash-hay/profiles',
-            public_id: `profile_${userId}`,
+            public_id,
             resource_type: 'image',
             format: 'jpg',
+            overwrite: false, // NE PAS écraser l’ancienne
           },
           (error, result) => {
             if (error) return reject(error);
@@ -632,13 +636,25 @@ export const uploadProfileImage = async (req: Request, res: Response) => {
 
     const result = await uploadFromBuffer(file.buffer);
 
-    // ✅ Mise à jour de la photo de profil dans la colonne correcte
-    await pool.query('UPDATE users SET photo_url = $1 WHERE id = $2', [
-      result.secure_url,
-      userId,
-    ]);
+    // Archive toutes les anciennes images de ce user
+    await pool.query(
+      `UPDATE profile_images SET is_current = false WHERE user_id = $1`,
+      [userId]
+    );
 
-    // ✅ Renvoyer le profil à jour
+    // Ajoute la nouvelle image comme current
+    await pool.query(
+      `INSERT INTO profile_images (user_id, url, is_current) VALUES ($1, $2, true)`,
+      [userId, result.secure_url]
+    );
+
+    // Mets à jour le champ users.photo_url (pour la photo actuelle)
+    await pool.query(
+      'UPDATE users SET photo_url = $1 WHERE id = $2',
+      [result.secure_url, userId]
+    );
+
+    // Récupère l'utilisateur à jour
     const updatedUser = await pool.query(
       'SELECT id, first_name, last_name, photo_url FROM users WHERE id = $1',
       [userId]
@@ -647,6 +663,7 @@ export const uploadProfileImage = async (req: Request, res: Response) => {
     res.status(200).json({
       message: 'Image de profil mise à jour avec succès',
       user: updatedUser.rows[0],
+      imageUrl: result.secure_url,
     });
   } catch (err) {
     console.error('❌ Erreur upload image :', err);
