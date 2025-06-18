@@ -867,11 +867,13 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
   try {
     await client.query('BEGIN');
 
+    console.log("Normalized Contact: ", normalizedContact); // Debug pour vérifier le paramètre
     // 1. Vérifie OTP
     const otpRes = await client.query(
       `SELECT * FROM otps WHERE contact_members = $1 ORDER BY expires_at DESC LIMIT 1`,
       [normalizedContact]
     );
+    
     if (otpRes.rows.length === 0) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Aucun code trouvé pour ce contact.' });
