@@ -867,82 +867,75 @@ export const sendOTPRegister = async (req: Request, res: Response) => {
 // 2️⃣ VERIF OTP + CRÉATION MEMBRE + INSERT ID DANS USERS
 export const verifyOTPRegister = async (req: Request, res: Response) => {
   const { contact, otp } = req.body;
-  const userId = req.user?.id; // L'utilisateur connecté qui veut être membre
+  const userId = req.user?.id; // Utilisateur connecté via token
   const isEmail = contact.includes('@');
 
   if (!contact || !otp) {
     return res.status(400).json({ error: 'Contact ou OTP manquant.' });
   }
+
+  // Vérifie si l'utilisateur est authentifié
   if (!userId) {
     return res.status(401).json({ error: 'Utilisateur non authentifié.' });
   }
 
-  // 1. Normalisation du contact
   const normalizedContact = isEmail ? contact.trim().toLowerCase() : contact.replace(/\D/g, '');
-
+  
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    // 2. Vérifie si ce contact est déjà utilisé par un autre membre
-    const alreadyUsedRes = await client.query(
-      `SELECT user_id FROM members WHERE contact = $1 AND user_id != $2`,
-      [normalizedContact, userId]
-    );
-    if (alreadyUsedRes.rows.length > 0) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ error: 'Ce nom Cash Hay est déjà utilisé par un autre client, utilisez-en un autre.' });
-    }
-
-    // 3. Vérifie OTP pour ce contact (via table otps)
+    // Vérifie si l'OTP est valide pour ce contact
     const otpRes = await client.query(
       `SELECT * FROM otps WHERE contact_members = $1 ORDER BY expires_at DESC LIMIT 1`,
       [normalizedContact]
     );
+
     if (otpRes.rows.length === 0) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Aucun code trouvé pour ce contact.' });
     }
+
     const { code, expires_at } = otpRes.rows[0];
-    if (String(code).trim() !== String(otp).trim()) {
+
+    if (code !== otp || new Date() > new Date(expires_at)) {
       await client.query('ROLLBACK');
-      return res.status(400).json({ error: 'Code incorrect.' });
-    }
-    if (new Date() > new Date(expires_at)) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ error: 'Code expiré.' });
+      return res.status(400).json({ error: 'Code incorrect ou expiré.' });
     }
 
-    // 4. Supprime l'OTP après validation
     await client.query('DELETE FROM otps WHERE contact_members = $1', [normalizedContact]);
 
-    // 5. Récupère la ligne membre du owner (user_id connecté)
-    const memberRes = await client.query(
-      `SELECT id, contact FROM members WHERE user_id = $1`,
-      [userId]
+    // Vérifie si le contact existe déjà dans members
+    const memberCheck = await client.query(
+      `SELECT id, contact FROM members WHERE user_id = $1 AND contact = $2`,
+      [userId, normalizedContact]
     );
-    if (memberRes.rows.length === 0) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ error: 'Aucun membre trouvé pour cet utilisateur. Contacte le support.' });
+
+    if (memberCheck.rows.length > 0) {
+      const memberId = memberCheck.rows[0].id;
+      if (!memberCheck.rows[0].contact) {
+        await client.query(
+          `UPDATE members SET contact = $1, updated_at = $2 WHERE id = $3`,
+          [normalizedContact, new Date(), memberId]
+        );
+      }
+
+      await client.query('COMMIT');
+      return res.status(200).json({ message: 'Membre existant mis à jour', userId, memberId });
     }
 
-    const memberId = memberRes.rows[0].id;
-    const memberContact = memberRes.rows[0].contact;
-    const now = new Date();
+    // Ajoute un membre s'il n'existe pas
+    const memberId = uuidv4();
+    const username = normalizedContact.replace(/[@.+-]/g, '_').slice(0, 30);
 
-    if (!memberContact || memberContact === '') {
-      // Le champ contact est vide → on l’assigne
-      await client.query(
-        `UPDATE members SET contact = $1, updated_at = $2 WHERE id = $3`,
-        [normalizedContact, now, memberId]
-      );
-      await client.query('COMMIT');
-      return res.status(200).json({ message: 'Votre contact Cash Hay a bien été enregistré.', userId, memberId });
-    } else {
-      // Déjà membre avec un contact → rien à faire
-      await client.query('COMMIT');
-      return res.status(200).json({ message: 'Vous êtes déjà membre Cash Hay.', userId, memberId });
-    }
+    await client.query(
+      `INSERT INTO members (id, user_id, display_name, contact, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [memberId, userId, username, normalizedContact, new Date(), new Date()]
+    );
+
+    await client.query('COMMIT');
+    return res.status(200).json({ message: 'Membre créé avec succès.', userId, memberId });
 
   } catch (error) {
     await client.query('ROLLBACK');
@@ -952,6 +945,7 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
     client.release();
   }
 };
+
 
 
 
