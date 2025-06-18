@@ -118,10 +118,10 @@ await client.query(
 
     // 3. MEMBERS (on met bien l'user_id et le contact unique)
     await client.query(
-      `INSERT INTO members (id, user_id, display_name, contact, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, NOW(), NOW())`,
-      [memberId, userId, username, email]
-    );
+  `INSERT INTO members (id, user_id, display_name, created_at, updated_at)
+   VALUES ($1, $2, $3, NOW(), NOW())`,
+  [memberId, userId, username]
+);
 
     // 4. LOGIN_HISTORY (optionnel mais recommandé)
     await client.query(
