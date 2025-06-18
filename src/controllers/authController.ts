@@ -907,41 +907,42 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
       [userId]
     );
 
-    if (memberCheck && memberCheck.rowCount !== null && memberCheck.rowCount > 0) {
-  // L'utilisateur est déjà un membre
-  const memberId = memberCheck.rows[0].id;
+    if (memberCheck && memberCheck.rows.length > 0) {
+      // L'utilisateur est déjà un membre
+      const memberId = memberCheck.rows[0].id;
 
-  // Optionnel : on peut mettre à jour les informations, par exemple le contact si nécessaire
-  if (memberCheck.rows[0].contact !== normalizedContact) {
+      // Optionnel : on peut mettre à jour les informations, par exemple le contact si nécessaire
+      if (memberCheck.rows[0].contact !== normalizedContact) {
+        await client.query(
+          `UPDATE members SET contact = $1, updated_at = $2 WHERE id = $3`,
+          [normalizedContact, now, memberId]
+        );
+      }
+
+      await client.query('COMMIT');
+      return res.status(200).json({ message: 'Utilisateur déjà membre ou membre mis à jour.', userId, memberId });
+    }
+
+    // 3. Si l'utilisateur n'est pas encore membre, on l'ajoute à `members`
+    const memberId = uuidv4(); // Définir memberId avant de l'utiliser
+
+    const username = normalizedContact.replace(/[@.+-]/g, '_').slice(0, 30);
+
     await client.query(
-      `UPDATE members SET contact = $1, updated_at = $2 WHERE id = $3`,
-      [normalizedContact, now, memberId]
+      `INSERT INTO members (id, user_id, display_name, contact, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [memberId, userId, username, normalizedContact, now, now]
     );
-  }
 
-  await client.query('COMMIT');
-  return res.status(200).json({ message: 'Utilisateur déjà membre ou membre mis à jour.', userId, memberId });
-} else {
-  // Si memberCheck.rowCount est 0 ou null, l'utilisateur n'est pas encore membre, on le crée.
-  const memberId = uuidv4(); // Définir memberId avant de l'utiliser
+    // Mise à jour du user_id dans `users`
+    await client.query(
+      `UPDATE users SET member_id = $1 WHERE id = $2`,
+      [memberId, userId]
+    );
 
-  const username = normalizedContact.replace(/[@.+-]/g, '_').slice(0, 30);
+    await client.query('COMMIT');
+    return res.status(200).json({ message: 'Membre créé ou mis à jour avec succès.', userId, memberId });
 
-  await client.query(
-    `INSERT INTO members (id, user_id, display_name, contact, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6)`,
-    [memberId, userId, username, normalizedContact, now, now]
-  );
-
-  // Mise à jour du user_id dans `users`
-  await client.query(
-    `UPDATE users SET member_id = $1 WHERE id = $2`,
-    [memberId, userId]
-  );
-
-  await client.query('COMMIT');
-  return res.status(200).json({ message: 'Membre créé ou mis à jour avec succès.', userId, memberId });
-}
   } catch (error) {
     await client.query('ROLLBACK');
     console.error('❌ Erreur verifyOTPRegister :', error);
@@ -950,6 +951,7 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
     client.release();
   }
 };
+
 
 
 // ✅ checkMember doit bien renvoyer aussi memberId si existant
