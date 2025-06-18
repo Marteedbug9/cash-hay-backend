@@ -867,7 +867,7 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
   try {
     await client.query('BEGIN');
 
-    // 1. OTP Lookup
+    // 1. Vérifie OTP
     const otpRes = await client.query(
       `SELECT * FROM otps WHERE contact_members = $1 ORDER BY expires_at DESC LIMIT 1`,
       [normalizedContact]
@@ -887,28 +887,41 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
     }
     await client.query('DELETE FROM otps WHERE contact_members = $1', [normalizedContact]);
 
-    // 2. Recherche user existant
+    // 2. Recherche user existant UNIQUEMENT PAR ID
+    // On vérifie d'abord par contact (pour l'inscription rapide, c'est la seule info connue)
     const userQuery = isEmail
       ? `SELECT id, member_id FROM users WHERE LOWER(email) = $1`
       : `SELECT id, member_id FROM users WHERE phone = $1`;
     const existing = await client.query(userQuery, [normalizedContact]);
 
-    const username = normalizedContact.replace(/[@.+-]/g, '_').slice(0, 20);
+    const username = normalizedContact.replace(/[@.+-]/g, '_').slice(0, 30);
     const now = new Date();
     let userId: string;
     let memberId: string;
 
     if (existing.rows.length > 0) {
+      // L'utilisateur existe, on récupère son id
       userId = existing.rows[0].id;
 
-      // Vérifie s’il y a déjà un member pour ce user_id
+      // On vérifie s’il a déjà un "member" attaché à son user_id
       const memberCheck = await client.query(
-        `SELECT id FROM members WHERE user_id = $1`,
+        `SELECT id, contact FROM members WHERE user_id = $1`,
         [userId]
       );
 
-      if (memberCheck.rowCount === 0) {
-        // S'il n'existe PAS, on l'insère (première fois quickregister)
+      if ((memberCheck.rowCount ?? 0) > 0) {
+        // Il est déjà membre ! On ne réinsère rien. Optionnel : on update le contact si besoin
+        memberId = memberCheck.rows[0].id;
+
+        // (Facultatif) On peut mettre à jour le contact si le champ est vide
+        if (!memberCheck.rows[0].contact) {
+          await client.query(
+            `UPDATE members SET contact = $1, updated_at = $2 WHERE id = $3`,
+            [normalizedContact, now, memberId]
+          );
+        }
+      } else {
+        // Il n'est PAS encore membre : on INSÈRE une ligne members
         memberId = uuidv4();
         await client.query(
           `INSERT INTO members (id, user_id, display_name, contact, created_at, updated_at)
@@ -920,42 +933,23 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
           `UPDATE users SET member_id = $1 WHERE id = $2`,
           [memberId, userId]
         );
-      } else {
-        // Si déjà un member, on NE touche à rien !
-        memberId = memberCheck.rows[0].id;
       }
 
       await client.query('COMMIT');
-      return res.status(200).json({ message: 'Utilisateur déjà inscrit.', userId, memberId });
+      return res.status(200).json({ message: 'Utilisateur déjà inscrit ou membre créé.', userId, memberId });
     }
-
-    // --- Création nouvel utilisateur + membre ---
-    userId = uuidv4();
-    memberId = uuidv4();
-    await client.query(
-      `INSERT INTO users (id, username, is_verified, created_at, member_id)
-       VALUES ($1, $2, false, $3, $4)`,
-      [userId, username, now, memberId]
-    );
-    await client.query(
-      `INSERT INTO members (id, user_id, display_name, contact, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [memberId, userId, username, normalizedContact, now, now]
-    );
-    await client.query('COMMIT');
-
-    // 🎉 Message de bienvenue
+  
+   // 🎉 Message de bienvenue
     if (isEmail) {
       await sendEmail({
         to: contact,
         subject: 'Bienvenue sur Cash Hay',
-        text: 'Votre compte a été créé avec succès.',
+        text: 'Votre compte a été créé avec succès, vous pouvez transferer et recevoir avec securiter.',
       });
     } else {
       await sendSMS(contact, 'Bienvenue sur Cash Hay ! Votre compte a été créé.');
     }
-
-    return res.status(200).json({ message: 'Inscription réussie.', userId, memberId });
+   
   } catch (error) {
     await client.query('ROLLBACK');
     console.error('❌ Erreur verifyOTPRegister :', error);
@@ -964,6 +958,7 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
     client.release();
   }
 };
+
 
 
 
