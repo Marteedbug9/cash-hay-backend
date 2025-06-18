@@ -889,69 +889,60 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
     }
     await client.query('DELETE FROM otps WHERE contact_members = $1', [normalizedContact]);
 
-    // 2. Recherche user existant UNIQUEMENT PAR ID
-    // On vérifie d'abord par contact (pour l'inscription rapide, c'est la seule info connue)
+    // 2. Recherche si l'utilisateur existe dans members
     const userQuery = isEmail
-      ? `SELECT user_id, contact  FROM members`
-      : `SELECT user_id, contact  FROM members`;
+      ? `SELECT user_id, contact FROM members WHERE contact = $1`
+      : `SELECT user_id, contact FROM members WHERE contact = $1`;
     const existing = await client.query(userQuery, [normalizedContact]);
 
+    if (existing.rows.length === 0) {
+      return res.status(400).json({ error: 'Utilisateur non trouvé avec ce contact.' });
+    }
+
+    const userId = existing.rows[0].user_id;
     const username = normalizedContact.replace(/[@.+-]/g, '_').slice(0, 30);
     const now = new Date();
-    let userId: string;
     let memberId: string;
 
-    if (existing.rows.length > 0) {
-      // L'utilisateur existe, on récupère son id
-      userId = existing.rows[0].id;
+    // Vérifie si l'utilisateur est déjà membre
+    const memberCheck = await client.query(
+      `SELECT id, contact FROM members WHERE user_id = $1`,
+      [userId]
+    );
 
-      // On vérifie s’il a déjà un "member" attaché à son user_id
-      const memberCheck = await client.query(
-        `SELECT id, contact FROM members WHERE user_id = $1`,
-        [userId]
-      );
+    if (memberCheck.rows.length > 0) {
+      // L'utilisateur est déjà un membre
+      memberId = memberCheck.rows[0].id;
 
-      if ((memberCheck.rowCount ?? 0) > 0) {
-        // Il est déjà membre ! On ne réinsère rien. Optionnel : on update le contact si besoin
-        memberId = memberCheck.rows[0].id;
-
-        // (Facultatif) On peut mettre à jour le contact si le champ est vide
-        if (!memberCheck.rows[0].contact) {
-          await client.query(
-            `UPDATE members SET contact = $1, updated_at = $2 WHERE id = $3`,
-            [normalizedContact, now, memberId]
-          );
-        }
-      } else {
-        // Il n'est PAS encore membre : on INSÈRE une ligne members
-        memberId = uuidv4();
+      // Met à jour le contact si nécessaire
+      if (memberCheck.rows[0].contact !== normalizedContact) {
         await client.query(
-          `INSERT INTO members (id, user_id, display_name, contact, created_at, updated_at)
-           VALUES ($1, $2, $3, $4, $5, $6)`,
-          [memberId, userId, username, normalizedContact, now, now]
-        );
-        // On update user.member_id aussi
-        await client.query(
-          `UPDATE users SET member_id = $1 WHERE id = $2`,
-          [memberId, userId]
+          `UPDATE members SET contact = $1, updated_at = $2 WHERE id = $3`,
+          [normalizedContact, now, memberId]
         );
       }
 
       await client.query('COMMIT');
-      return res.status(200).json({ message: 'Utilisateur déjà inscrit ou membre créé.', userId, memberId });
+      return res.status(200).json({ message: 'Utilisateur déjà membre ou membre mis à jour.', userId, memberId });
     }
-  
-   // 🎉 Message de bienvenue
-    if (isEmail) {
-      await sendEmail({
-        to: contact,
-        subject: 'Bienvenue sur Cash Hay',
-        text: 'Votre compte a été créé avec succès, vous pouvez transferer et recevoir avec securiter.',
-      });
-    } else {
-      await sendSMS(contact, 'Bienvenue sur Cash Hay ! Votre compte a été créé.');
-    }
-   
+
+    // Si l'utilisateur n'est pas encore membre, on l'ajoute à `members`
+    memberId = uuidv4(); // Définir memberId avant de l'utiliser
+    await client.query(
+      `INSERT INTO members (id, user_id, display_name, contact, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [memberId, userId, username, normalizedContact, now, now]
+    );
+
+    // Mise à jour du user_id dans `users`
+    await client.query(
+      `UPDATE users SET member_id = $1 WHERE id = $2`,
+      [memberId, userId]
+    );
+
+    await client.query('COMMIT');
+    return res.status(200).json({ message: 'Membre créé ou mis à jour avec succès.', userId, memberId });
+
   } catch (error) {
     await client.query('ROLLBACK');
     console.error('❌ Erreur verifyOTPRegister :', error);
@@ -960,6 +951,7 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
     client.release();
   }
 };
+
 
 
 
