@@ -925,7 +925,6 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
 
     // 3. Si l'utilisateur n'est pas encore membre, on l'ajoute à `members`
     const memberId = uuidv4(); // Définir memberId avant de l'utiliser
-
     const username = normalizedContact.replace(/[@.+-]/g, '_').slice(0, 30);
 
     await client.query(
@@ -951,6 +950,7 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
     client.release();
   }
 };
+
 
 
 
