@@ -851,21 +851,26 @@ export const sendOTPRegister = async (req: Request, res: Response) => {
 
 // 2️⃣ VERIF OTP + CRÉATION MEMBRE + INSERT ID DANS USERS
 export const verifyOTPRegister = async (req: Request, res: Response) => {
-  const { contact, otp } = req.body;
-  const userId = req.user?.id; // Utilisateur connecté via token !
-  const isEmail = contact.includes('@');
+  const { otp } = req.body;
+  const userId = req.user?.id; // Utilisateur connecté via token
 
-  if (!contact || !otp) {
-    return res.status(400).json({ error: 'Contact ou OTP manquant.' });
+  // Vérifie si l'OTP est présent
+  if (!otp) {
+    return res.status(400).json({ error: 'OTP manquant.' });
   }
+
+  // Vérifie si l'utilisateur est authentifié
   if (!userId) {
     return res.status(401).json({ error: 'Utilisateur non authentifié.' });
   }
 
-  // Normalisation stricte du contact
-  const normalizedContact = isEmail
-    ? contact.trim().toLowerCase()
-    : contact.replace(/\D/g, '');
+  const contact = req.user?.email || req.user?.phone; // Utilise l'email ou le téléphone de l'utilisateur connecté
+  if (!contact) {
+    return res.status(400).json({ error: 'Contact utilisateur manquant.' });
+  }
+
+  const isEmail = contact.includes('@');
+  const normalizedContact = isEmail ? contact.trim().toLowerCase() : contact.replace(/\D/g, '');
 
   const client = await pool.connect();
   try {
@@ -873,73 +878,70 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
 
     // 1. Vérifie OTP
     const otpRes = await client.query(
-      `SELECT * FROM otps WHERE contact_members = $1 ORDER BY expires_at DESC LIMIT 1`,
-      [normalizedContact]
+      `SELECT * FROM otps WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1`,
+      [userId]
     );
     if (otpRes.rows.length === 0) {
       await client.query('ROLLBACK');
-      return res.status(400).json({ error: 'Aucun code trouvé pour ce contact.' });
+      return res.status(400).json({ error: 'Aucun code trouvé pour cet utilisateur.' });
     }
+
     const { code, expires_at } = otpRes.rows[0];
-    if (code !== otp) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ error: 'Code incorrect.' });
-    }
-    if (new Date() > new Date(expires_at)) {
+    const now = new Date();
+
+    if (now > new Date(expires_at)) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Code expiré.' });
     }
-    await client.query('DELETE FROM otps WHERE contact_members = $1', [normalizedContact]);
 
-    // 2. Vérifie si le user connecté est déjà membre
+    if (String(code).trim() !== String(otp).trim()) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Code incorrect.' });
+    }
+
+    await client.query('DELETE FROM otps WHERE user_id = $1', [userId]); // Supprime l'OTP après validation
+
+    // 2. Vérifie si l'utilisateur est déjà membre
     const memberCheck = await client.query(
       `SELECT id, contact FROM members WHERE user_id = $1`,
       [userId]
     );
 
-    if ((memberCheck.rowCount ?? 0) > 0) {
-      // Il est déjà membre ! (même si contact vide ou pas)
-      await client.query('ROLLBACK');
-      return res.status(409).json({ error: 'Ce compte Cash Hay est déjà utilisé.' });
-    }
+    if (memberCheck && memberCheck.rowCount !== null && memberCheck.rowCount > 0) {
+  // L'utilisateur est déjà un membre
+  const memberId = memberCheck.rows[0].id;
 
-    // 3. S'il n'est pas encore membre, on l'ajoute
-    const memberId = uuidv4();
-    // Cherche le username dans users (pour display_name)
-    const userRes = await client.query(`SELECT username FROM users WHERE id = $1`, [userId]);
-    const username = userRes.rows[0]?.username || normalizedContact.replace(/[@.+-]/g, '_').slice(0, 30);
-    const now = new Date();
-
+  // Optionnel : on peut mettre à jour les informations, par exemple le contact si nécessaire
+  if (memberCheck.rows[0].contact !== normalizedContact) {
     await client.query(
-      `INSERT INTO members (id, user_id, display_name, contact, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $5)`,
-      [memberId, userId, username, normalizedContact, now]
+      `UPDATE members SET contact = $1, updated_at = $2 WHERE id = $3`,
+      [normalizedContact, now, memberId]
     );
-    // Met à jour users.member_id aussi (facultatif mais conseillé)
-    await client.query(
-      `UPDATE users SET member_id = $1 WHERE id = $2`,
-      [memberId, userId]
-    );
+  }
 
-    await client.query('COMMIT');
+  await client.query('COMMIT');
+  return res.status(200).json({ message: 'Utilisateur déjà membre ou membre mis à jour.', userId, memberId });
+} else {
+  // Si memberCheck.rowCount est 0 ou null, l'utilisateur n'est pas encore membre, on le crée.
+  const memberId = uuidv4(); // Définir memberId avant de l'utiliser
 
-    // 🎉 Message de bienvenue
-    if (isEmail) {
-      await sendEmail({
-        to: contact,
-        subject: 'Bienvenue sur Cash Hay',
-        text: 'Votre compte a été créé avec succès, vous pouvez transférer et recevoir avec sécurité.',
-      });
-    } else {
-      await sendSMS(contact, 'Bienvenue sur Cash Hay ! Votre compte a été créé.');
-    }
+  const username = normalizedContact.replace(/[@.+-]/g, '_').slice(0, 30);
 
-    return res.status(200).json({
-      message: 'Inscription membre réussie.',
-      userId,
-      memberId,
-    });
+  await client.query(
+    `INSERT INTO members (id, user_id, display_name, contact, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [memberId, userId, username, normalizedContact, now, now]
+  );
 
+  // Mise à jour du user_id dans `users`
+  await client.query(
+    `UPDATE users SET member_id = $1 WHERE id = $2`,
+    [memberId, userId]
+  );
+
+  await client.query('COMMIT');
+  return res.status(200).json({ message: 'Membre créé ou mis à jour avec succès.', userId, memberId });
+}
   } catch (error) {
     await client.query('ROLLBACK');
     console.error('❌ Erreur verifyOTPRegister :', error);
@@ -948,8 +950,6 @@ export const verifyOTPRegister = async (req: Request, res: Response) => {
     client.release();
   }
 };
-
-
 
 
 // ✅ checkMember doit bien renvoyer aussi memberId si existant
