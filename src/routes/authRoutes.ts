@@ -54,7 +54,7 @@ router.post('/resend-otp', resendOTP);
 
 // ➕ Ajouter ceci pour l’inscription rapide
 router.post('/send-otp-register', sendOTPRegister);
-router.post('/verify-otp-register', verifyOTPRegister);
+router.post('/verify-otp-register', verifyToken, verifyOTPRegister);
 router.post('/check-member', verifyToken, checkMember);
 
 router.post('/push-token', verifyToken, savePushToken);
