@@ -1033,3 +1033,61 @@ export const logAudit = async (userId: string, action: string, details = '', req
   );
 };
 
+export const requestNameChange = async (req: Request, res: Response) => {
+  try {
+    // Authentification (middleware JWT doit setter req.user)
+    const userId = (req as any).user?.id;
+    if (!userId) return res.status(401).json({ error: 'Non autorisé.' });
+
+    // Vérifie la présence des fichiers
+    const files = req.files as { [fieldname: string]: Express.Multer.File[] };
+    const justiceDoc = files['justice_document']?.[0];
+    const newIdentity = files['new_identity']?.[0];
+
+    if (!justiceDoc || !newIdentity)
+      return res.status(400).json({ error: 'Tous les documents sont requis.' });
+
+    // Upload sur Cloudinary
+    const uploadToCloudinary = (fileBuffer: Buffer, filename: string) =>
+      new Promise<any>((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+          {
+            folder: 'cash-hay/name-change',
+            public_id: filename,
+            resource_type: 'auto',
+          },
+          (error, result) => {
+            if (error) return reject(error);
+            resolve(result);
+          }
+        );
+        streamifier.createReadStream(fileBuffer).pipe(stream);
+      });
+
+    // Upload les deux fichiers
+    const [justiceResult, identityResult] = await Promise.all([
+      uploadToCloudinary(justiceDoc.buffer, `justice_${userId}_${Date.now()}`),
+      uploadToCloudinary(newIdentity.buffer, `identity_${userId}_${Date.now()}`),
+    ]);
+
+    const comment = req.body.comment || '';
+
+    // Stocke la demande dans la DB
+    await pool.query(
+      `INSERT INTO name_change_requests
+      (user_id, justice_doc_url, identity_doc_url, comment)
+      VALUES ($1, $2, $3, $4)`,
+      [
+        userId,
+        justiceResult.secure_url,
+        identityResult.secure_url,
+        comment,
+      ]
+    );
+
+    res.json({ success: true, message: 'Demande envoyée. Un agent va vérifier vos documents.' });
+  } catch (err) {
+    console.error('Erreur name change:', err);
+    res.status(500).json({ error: 'Erreur serveur.' });
+  }
+};
