@@ -263,31 +263,47 @@ export const getProfile = async (req: Request, res: Response) => {
   const userId = req.user?.id;
 
   try {
-    // On récupère aussi le contact du membre lié à ce user
-    const userRes = await pool.query(
-      'SELECT id, first_name, last_name, username, email FROM users WHERE id = $1',
-      [userId]
-    );
-    const memberRes = await pool.query(
-      'SELECT contact FROM members WHERE user_id = $1',
+    // On récupère toutes les infos utiles en une seule requête
+    const result = await pool.query(
+      `SELECT 
+          u.id,
+          u.username,
+          u.email,
+          u.first_name,
+          u.last_name,
+          m.phone,
+          m.address,
+          m.contact
+        FROM users u
+        LEFT JOIN members m ON m.user_id = u.id
+        WHERE u.id = $1`,
       [userId]
     );
 
-    if (userRes.rows.length === 0) {
+    if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Utilisateur non trouvé.' });
     }
 
-    const user = {
-      ...userRes.rows[0],
-      contact: memberRes.rows[0]?.contact || '',
-    };
+    const row = result.rows[0];
+    const fullName = [row.first_name, row.last_name].filter(Boolean).join(' ');
 
-    res.json({ user });
+    res.json({
+      user: {
+        id: row.id,
+        username: row.username,
+        email: row.email,
+        full_name: fullName,
+        address: row.address || '',
+        phone: row.phone || '',
+        contact: row.contact || '',
+      },
+    });
   } catch (err) {
     console.error('❌ Erreur profil:', err);
     res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
+
 
 
 
