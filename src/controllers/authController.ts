@@ -258,12 +258,13 @@ export const login = async (req: Request, res: Response) => {
     res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
+
 // ➤ Récupération de profil
 export const getProfile = async (req: Request, res: Response) => { 
   const userId = req.user?.id;
 
   try {
-    // On récupère toutes les infos utiles en une seule requête
+    // Utilise les colonnes qui existent vraiment
     const result = await pool.query(
       `SELECT 
           u.id,
@@ -271,8 +272,8 @@ export const getProfile = async (req: Request, res: Response) => {
           u.email,
           u.first_name,
           u.last_name,
-          m.phone,
-          m.address,
+          u.phone,
+          u.address,
           m.contact
         FROM users u
         LEFT JOIN members m ON m.user_id = u.id
@@ -303,6 +304,7 @@ export const getProfile = async (req: Request, res: Response) => {
     res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
+
 
 
 
