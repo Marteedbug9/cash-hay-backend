@@ -66,6 +66,8 @@ router.post('/confirm-suspicious-attempt', confirmSuspiciousAttempt);
 // Photo de profil
 router.post('/upload-profile-image', verifyToken, upload.single('image'), uploadProfileImage);
 
+router.get('/profile', verifyToken, getProfile);
+
 
 router.post('/check-unique', async (req, res) => {
   const { field, value } = req.body;

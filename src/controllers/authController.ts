@@ -259,40 +259,36 @@ export const login = async (req: Request, res: Response) => {
   }
 };
 // ➤ Récupération de profil
-export const getProfile = async (req: Request, res: Response) => {
+export const getProfile = async (req: Request, res: Response) => { 
   const userId = req.user?.id;
 
   try {
-    // 1️⃣ Récupère l'utilisateur
-    const result = await pool.query(
+    // On récupère aussi le contact du membre lié à ce user
+    const userRes = await pool.query(
       'SELECT id, first_name, last_name, username, email FROM users WHERE id = $1',
       [userId]
     );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Utilisateur non trouvé.' });
-    }
-    const user = result.rows[0];
-
-    // 2️⃣ Récupère le contact membre lié
     const memberRes = await pool.query(
       'SELECT contact FROM members WHERE user_id = $1',
       [userId]
     );
-    const contact = memberRes.rows[0]?.contact || '';
 
-    // 3️⃣ Retourne toutes les infos
-    return res.json({
-      user: {
-        ...user,
-        contact, // Ajoute le contact du membre
-      },
-    });
+    if (userRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Utilisateur non trouvé.' });
+    }
+
+    const user = {
+      ...userRes.rows[0],
+      contact: memberRes.rows[0]?.contact || '',
+    };
+
+    res.json({ user });
   } catch (err) {
     console.error('❌ Erreur profil:', err);
     res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
+
 
 
 // ➤ Démarrer récupération de compte
