@@ -1,9 +1,8 @@
 import { Request, Response } from 'express';
-import pool from '../config/db'; // Assure-toi que le pool est bien importé
+import pool from '../config/db'; // Ton pool PostgreSQL
 import { v4 as uuidv4 } from 'uuid';
 
-
-// ✅ Ajouter une notification
+// ✅ Ajouter une notification à la table (backend)
 export const addNotification = async ({
   user_id,
   type,
@@ -13,7 +12,7 @@ export const addNotification = async ({
   from_profile_image,
   amount,
   status,
-  transaction_id, // Optionnel, pour rattacher la notif à la bonne transaction
+  transaction_id, // Optionnel
 }: {
   user_id: string;
   type: 'request' | 'receive' | 'cancel';
@@ -44,8 +43,7 @@ export const addNotification = async ({
   );
 };
 
-
-// ✅ Récupérer toutes les notifications d’un utilisateur
+// ✅ Récupérer toutes les notifications d’un utilisateur (GET /api/notifications)
 export const getNotifications = async (req: Request, res: Response) => {
   const userId = req.user?.id;
   if (!userId) {
@@ -69,7 +67,6 @@ export const getNotifications = async (req: Request, res: Response) => {
       ORDER BY created_at DESC`,
       [userId]
     );
-
     res.json({ notifications: result.rows });
   } catch (err) {
     console.error('❌ Erreur getNotifications :', err);
@@ -77,7 +74,7 @@ export const getNotifications = async (req: Request, res: Response) => {
   }
 };
 
-// ✅ Supprimer toutes les notifications pour un utilisateur
+// ✅ Supprimer toutes les notifications pour un utilisateur (DELETE /api/notifications)
 export const clearNotifications = async (req: Request, res: Response) => {
   const userId = req.user?.id;
   if (!userId) {
