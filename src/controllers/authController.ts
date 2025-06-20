@@ -1119,15 +1119,20 @@ export const getSecurityInfo = async (req: Request, res: Response) => {
   }
 
   try {
-    // Fetch user, options, and linked accounts/cards/apps from DB:
-    const user = await pool.query('SELECT username FROM users WHERE id = $1', [userId]);
-    const sec = await pool.query('SELECT sign_in_option, verification_method FROM user_security_options WHERE user_id = $1', [userId]);
+    // User infos
+    const userRes = await pool.query('SELECT username FROM users WHERE id = $1', [userId]);
+    const sec = await pool.query('SELECT sign_in_option, verification_method, biometrics_enabled FROM user_security_options WHERE user_id = $1', [userId]);
     const linked = await pool.query('SELECT id, name, provider, icon_url FROM linked_apps WHERE user_id = $1', [userId]);
+    
+    // Prend les 4 premiers caractères du username
+    const username = userRes.rows[0]?.username ?? '';
+    const maskedUsername = username.substring(0, 4).padEnd(username.length, '*');
 
     res.json({
-      username: user.rows[0]?.username ?? '',
+      username: maskedUsername,
       signInOption: sec.rows[0]?.sign_in_option ?? '',
       verificationMethod: sec.rows[0]?.verification_method ?? '',
+      biometricsEnabled: !!sec.rows[0]?.biometrics_enabled, // true/false
       linkedApps: linked.rows.map(app => ({
         id: app.id,
         name: app.name,
@@ -1137,6 +1142,70 @@ export const getSecurityInfo = async (req: Request, res: Response) => {
     });
   } catch (err) {
     console.error('Erreur getSecurityInfo:', err);
+    res.status(500).json({ error: 'Erreur serveur.' });
+  }
+};
+
+export const changeUsername = async (req: Request, res: Response) => {
+  const userId = req.user?.id;
+  const { newUsername, password } = req.body;
+
+  if (!userId || !newUsername || !password) {
+    return res.status(400).json({ error: 'Champs requis.' });
+  }
+
+  // Critères: 8+ char, 1 Maj, 1 chiffre, 1 symbole
+  const usernameRegex = /^(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$/;
+  if (!usernameRegex.test(newUsername)) {
+    return res.status(400).json({ error: "Username doit avoir min 8 caractères, 1 majuscule, 1 chiffre, 1 symbole." });
+  }
+
+  try {
+    // Vérifie password actuel
+    const userRes = await pool.query('SELECT password FROM users WHERE id = $1', [userId]);
+    if (!userRes.rows.length) return res.status(404).json({ error: 'Utilisateur non trouvé.' });
+
+    const isValid = await bcrypt.compare(password, userRes.rows[0].password);
+    if (!isValid) return res.status(401).json({ error: 'Mot de passe actuel incorrect.' });
+
+    // Vérifie unicité du username
+    const exists = await pool.query('SELECT id FROM users WHERE username = $1', [newUsername]);
+    if (exists.rows.length) return res.status(409).json({ error: 'Username déjà utilisé.' });
+
+    await pool.query('UPDATE users SET username = $1 WHERE id = $2', [newUsername, userId]);
+    res.json({ success: true, message: 'Username modifié avec succès.' });
+  } catch (err) {
+    console.error('Erreur changeUsername:', err);
+    res.status(500).json({ error: 'Erreur serveur.' });
+  }
+};
+
+export const changePassword = async (req: Request, res: Response) => {
+  const userId = req.user?.id;
+  const { currentPassword, newPassword } = req.body;
+
+  if (!userId || !currentPassword || !newPassword) {
+    return res.status(400).json({ error: 'Champs requis.' });
+  }
+
+  // Critères: 8+ char, 1 Maj, 1 chiffre, 1 symbole
+  const pwdRegex = /^(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$/;
+  if (!pwdRegex.test(newPassword)) {
+    return res.status(400).json({ error: "Le mot de passe doit avoir min 8 caractères, 1 majuscule, 1 chiffre, 1 symbole." });
+  }
+
+  try {
+    const userRes = await pool.query('SELECT password FROM users WHERE id = $1', [userId]);
+    if (!userRes.rows.length) return res.status(404).json({ error: 'Utilisateur non trouvé.' });
+
+    const isValid = await bcrypt.compare(currentPassword, userRes.rows[0].password);
+    if (!isValid) return res.status(401).json({ error: 'Mot de passe actuel incorrect.' });
+
+    const hashed = await bcrypt.hash(newPassword, 10);
+    await pool.query('UPDATE users SET password = $1 WHERE id = $2', [hashed, userId]);
+    res.json({ success: true, message: 'Mot de passe modifié.' });
+  } catch (err) {
+    console.error('Erreur changePassword:', err);
     res.status(500).json({ error: 'Erreur serveur.' });
   }
 };

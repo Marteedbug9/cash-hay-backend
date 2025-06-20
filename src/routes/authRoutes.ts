@@ -16,6 +16,8 @@ import {
   checkMember,
   getSecurityInfo,
   savePushToken,
+  changePassword,
+  changeUsername,
   searchUserByContact
 } from '../controllers/authController';
 import upload from '../middlewares/upload';
@@ -71,6 +73,9 @@ router.get('/profile', verifyToken, getProfile);
 
 
 router.get('/security-info', verifyToken, getSecurityInfo);
+router.patch('/change-username', verifyToken, changeUsername);
+router.patch('/change-password', verifyToken, changePassword);
+
 
 router.post('/check-unique', async (req, res) => {
   const { field, value } = req.body;
