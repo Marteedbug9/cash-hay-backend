@@ -294,6 +294,8 @@ export const getProfile = async (req: Request, res: Response) => {
         username: row.username,
         email: row.email,
         full_name: fullName,
+        first_name: row.first_name || '',   // <= AJOUTE
+        last_name: row.last_name || '', 
         address: row.address || '',
         phone: row.phone || '',
         contact: row.contact || '',
