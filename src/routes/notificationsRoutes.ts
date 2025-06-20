@@ -10,4 +10,6 @@ router.get('/', verifyToken, getNotifications); // GET /api/notifications
 // ✅ Supprime toutes les notifications
 router.delete('/', verifyToken, clearNotifications); // DELETE /api/notifications
 
+
+
 export default router;
