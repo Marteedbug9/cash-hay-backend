@@ -14,6 +14,7 @@ import {
   verifyOTPRegister,
   sendOTPRegister,
   checkMember,
+  getSecurityInfo,
   savePushToken,
   searchUserByContact
 } from '../controllers/authController';
@@ -68,6 +69,8 @@ router.post('/upload-profile-image', verifyToken, upload.single('image'), upload
 
 router.get('/profile', verifyToken, getProfile);
 
+
+router.get('/', verifyToken, getSecurityInfo);
 
 router.post('/check-unique', async (req, res) => {
   const { field, value } = req.body;

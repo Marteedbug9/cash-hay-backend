@@ -1111,3 +1111,32 @@ export const requestNameChange = async (req: Request, res: Response) => {
     res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
+
+export const getSecurityInfo = async (req: Request, res: Response) => {
+  const userId = req.user?.id;
+  if (!userId) {
+    return res.status(401).json({ error: 'Utilisateur non authentifié' });
+  }
+
+  try {
+    // Fetch user, options, and linked accounts/cards/apps from DB:
+    const user = await pool.query('SELECT username FROM users WHERE id = $1', [userId]);
+    const sec = await pool.query('SELECT sign_in_option, verification_method FROM user_security_options WHERE user_id = $1', [userId]);
+    const linked = await pool.query('SELECT id, name, provider, icon_url FROM linked_apps WHERE user_id = $1', [userId]);
+
+    res.json({
+      username: user.rows[0]?.username ?? '',
+      signInOption: sec.rows[0]?.sign_in_option ?? '',
+      verificationMethod: sec.rows[0]?.verification_method ?? '',
+      linkedApps: linked.rows.map(app => ({
+        id: app.id,
+        name: app.name,
+        provider: app.provider,
+        iconUrl: app.icon_url,
+      }))
+    });
+  } catch (err) {
+    console.error('Erreur getSecurityInfo:', err);
+    res.status(500).json({ error: 'Erreur serveur.' });
+  }
+};
