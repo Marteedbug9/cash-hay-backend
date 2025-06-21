@@ -356,7 +356,8 @@ export const transfer = async (req: Request, res: Response) => {
         'SELECT amount FROM balances WHERE user_id = $1 FOR UPDATE',
         [senderId]
       );
-      const senderBalance = parseFloat(senderBalanceRes.rows[0]?.balance || '0');
+      const senderBalance = parseFloat(senderBalanceRes.rows[0]?.amount || '0');
+
       if (senderBalance < amount + transferFee) {
         await client.query('ROLLBACK');
         return res.status(400).json({ error: 'Fonds insuffisants (incluant les frais).' });
@@ -445,12 +446,13 @@ export const getBalance = async (req: Request, res: Response) => {
       return res.status(404).json({ error: "Solde non trouvé." });
     }
 
-    res.json({ balance: parseFloat(result.rows[0].amount) });
+    res.json({ balance: parseFloat(result.rows[0].amount) }); // <-- amount = balance officiel
   } catch (err) {
     console.error('❌ Erreur balance:', err);
     res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
+
 
 export const updateBalance = async (userId: string, delta: number) => {
   await pool.query(
@@ -460,6 +462,7 @@ export const updateBalance = async (userId: string, delta: number) => {
     [delta, userId]
   );
 };
+
 
 export const requestMoney = async (req: Request, res: Response) => {
   const requesterId = req.user?.id;
@@ -575,7 +578,6 @@ let memberRes;
 
 
 
-
 export const acceptRequest = async (req: Request, res: Response) => {
   const userId = req.user?.id;
   const { id } = req.params; // ID de la notification
@@ -604,14 +606,14 @@ export const acceptRequest = async (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Transaction introuvable ou déjà traitée.' });
     }
 
-    // 3. 💰 Vérifier le solde actuel
+    // 3. 💰 Vérifier le solde de la personne qui accepte
     const balanceRes = await pool.query(
-      `SELECT amount FROM balances WHERE user_id = $1`,
+      `SELECT amount FROM balances WHERE user_id = $1 FOR UPDATE`,
       [userId]
     );
-    const currentBalance = parseFloat(balanceRes.rows[0]?.balance || '0');
+    const currentBalance = parseFloat(balanceRes.rows[0]?.amount || '0');
 
-    const tax = 0.57; // 💵 change ici si tu veux une taxe (ex : 1)
+    const tax = 0.57;
     const totalToDeduct = parseFloat(amount) + tax;
 
     if (currentBalance < totalToDeduct) {
@@ -622,11 +624,11 @@ export const acceptRequest = async (req: Request, res: Response) => {
 
     // 4. 💳 Débiter le compte de l'utilisateur (celui qui accepte)
     await pool.query(
-      'UPDATE balances SET amount = amount + $1 WHERE user_id = $2',
+      'UPDATE balances SET amount = amount - $1 WHERE user_id = $2',
       [totalToDeduct, userId]
     );
 
-    // 5. 💸 Créditer le compte de l'expéditeur initial
+    // 5. 💸 Créditer le compte du demandeur initial
     await pool.query(
       'UPDATE balances SET amount = amount + $1 WHERE user_id = $2',
       [amount, transaction.user_id]
@@ -644,13 +646,28 @@ export const acceptRequest = async (req: Request, res: Response) => {
       [transaction_id]
     );
 
-    res.json({ message: 'Demande acceptée et transférée avec succès.' });
+    // 8. 💰 Transférer les frais à l’admin
+    const adminId = process.env.ADMIN_USER_ID || 'admin-id-123';
+    await pool.query(
+      'UPDATE balances SET amount = amount + $1 WHERE user_id = $2',
+      [tax, adminId]
+    );
+
+    // 9. 🧾 Enregistrer une transaction de frais
+    await pool.query(
+      `INSERT INTO transactions (id, user_id, type, amount, currency, recipient_id, source, status, description, created_at)
+       VALUES (gen_random_uuid(), $1, 'fee', $2, 'HTG', $3, 'request_fee', 'completed', 'Frais acceptation demande', NOW())`,
+      [userId, tax, adminId]
+    );
+
+    res.json({ message: 'Demande acceptée et transfert effectué avec succès.' });
 
   } catch (err) {
     console.error('❌ Erreur acceptRequest :', err);
     res.status(500).json({ error: 'Erreur lors de l’acceptation de la demande.' });
   }
 };
+
 
 export const cancelRequest = async (req: Request, res: Response) => {
   const userId = req.user?.id;
