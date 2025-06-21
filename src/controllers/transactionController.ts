@@ -422,11 +422,13 @@ export const transfer = async (req: Request, res: Response) => {
 
     } catch (error) {
       await client.query('ROLLBACK');
+        console.error('❌ Erreur lors du transfert:', error); // AJOUTE CECI
       throw error;
     } finally {
       client.release();
     }
   } catch (err) {
+    console.error('❌ Erreur serveur globale:', err); // AJOUTE CECI AUSSI
     return res.status(500).json({ error: 'Erreur serveur lors du transfert.' });
   }
 };
