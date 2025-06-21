@@ -190,7 +190,7 @@ export const deposit = async (req: Request, res: Response) => {
     await client.query('BEGIN');
 
     await client.query(
-      `UPDATE balances SET balance = balance + $1, updated_at = NOW() WHERE user_id = $2`,
+       `UPDATE balances SET amount = amount + $1, updated_at = NOW() WHERE user_id = $2`,
       [amount, userId]
     );
     const txId = uuidv4();
