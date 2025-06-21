@@ -352,7 +352,7 @@ export const transfer = async (req: Request, res: Response) => {
 
       // Vérifier balance + frais
       const senderBalanceRes = await client.query(
-        'SELECT balance FROM balances WHERE user_id = $1 FOR UPDATE',
+        'SELECT amount FROM balances WHERE user_id = $1 FOR UPDATE',
         [senderId]
       );
       const senderBalance = parseFloat(senderBalanceRes.rows[0]?.balance || '0');
@@ -363,11 +363,11 @@ export const transfer = async (req: Request, res: Response) => {
 
       // Débit/crédit balances
       await client.query(
-        'UPDATE balances SET balance = balance - $1 WHERE user_id = $2',
+        'UPDATE balances SET amount = amount - $1 WHERE user_id = $2',
         [amount + transferFee, senderId]
       );
       await client.query(
-        'UPDATE balances SET balance = balance + $1 WHERE user_id = $2',
+        'UPDATE balances SET amount = amount + $1 WHERE user_id = $2',
         [amount, recipientId]
       );
 
@@ -389,7 +389,7 @@ export const transfer = async (req: Request, res: Response) => {
       // Frais vers admin (adminId à configurer)
       const adminId = process.env.ADMIN_USER_ID || 'admin-id-123';
       await client.query(
-        `UPDATE balances SET balance = balance + $1 WHERE user_id = $2`,
+        'UPDATE balances SET amount = amount + $1 WHERE user_id = $2',
         [transferFee, adminId]
       );
       await client.query(
@@ -605,7 +605,7 @@ export const acceptRequest = async (req: Request, res: Response) => {
 
     // 3. 💰 Vérifier le solde actuel
     const balanceRes = await pool.query(
-      `SELECT balance FROM balances WHERE user_id = $1`,
+      `SELECT amount FROM balances WHERE user_id = $1`,
       [userId]
     );
     const currentBalance = parseFloat(balanceRes.rows[0]?.balance || '0');
@@ -621,13 +621,13 @@ export const acceptRequest = async (req: Request, res: Response) => {
 
     // 4. 💳 Débiter le compte de l'utilisateur (celui qui accepte)
     await pool.query(
-      `UPDATE balances SET balance = balance - $1 WHERE user_id = $2`,
+      'UPDATE balances SET amount = amount + $1 WHERE user_id = $2',
       [totalToDeduct, userId]
     );
 
     // 5. 💸 Créditer le compte de l'expéditeur initial
     await pool.query(
-      `UPDATE balances SET balance = balance + $1 WHERE user_id = $2`,
+      'UPDATE balances SET amount = amount + $1 WHERE user_id = $2',
       [amount, transaction.user_id]
     );
 
