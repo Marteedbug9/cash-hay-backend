@@ -108,3 +108,64 @@ export const requestPhysicalCard = async (req: Request, res: Response) => {
   }
 };
 
+
+export const saveCustomCard = async (req: Request, res: Response) => {
+  const userId = req.user?.id;
+  const { style_id, type, price, design_url } = req.body;
+
+  if (!style_id || !type || !price || !design_url)
+    return res.status(400).json({ error: 'Champs manquants.' });
+
+  try {
+    await pool.query(
+      `INSERT INTO user_cards (user_id, style_id, type, price, design_url)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [userId, style_id, type, price, design_url]
+    );
+    res.status(201).json({ message: 'Carte enregistrée avec succès.' });
+  } catch (err) {
+    console.error('❌ Erreur insertion carte personnalisée:', err);
+    res.status(500).json({ error: 'Erreur serveur.' });
+  }
+};
+
+
+export const getUserCards = async (req: Request, res: Response) => {
+  const userId = req.user?.id;
+
+  try {
+    const result = await pool.query(
+      `SELECT * FROM user_cards WHERE user_id = $1 ORDER BY created_at DESC`,
+      [userId]
+    );
+    res.json({ cards: result.rows });
+  } catch (err) {
+    console.error('❌ Erreur récupération cartes:', err);
+    res.status(500).json({ error: 'Erreur serveur.' });
+  }
+};
+
+
+export const getCurrentCard = async (req: Request, res: Response) => {
+  const userId = req.user?.id;
+
+  try {
+    const { rows: cards } = await pool.query(
+      `SELECT * FROM cards WHERE user_id = $1 ORDER BY requested_at DESC LIMIT 1`,
+      [userId]
+    );
+
+    const { rows: custom } = await pool.query(
+      `SELECT * FROM user_cards WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1`,
+      [userId]
+    );
+
+    return res.json({
+      card: cards[0] || null,
+      custom: custom[0] || null,
+    });
+  } catch (err) {
+    console.error('❌ Erreur récupération carte:', err);
+    res.status(500).json({ error: 'Erreur serveur.' });
+  }
+};
