@@ -191,34 +191,26 @@ export const login = async (req: Request, res: Response) => {
       return res.status(403).json({ error: 'Ce compte est sur liste noire.' });
     }
 
-    
-    // 🔍 Vérifie si l'IP a déjà été utilisée
     const ipResult = await pool.query(
       'SELECT * FROM login_history WHERE user_id = $1 AND ip_address = $2',
       [user.id, ip]
     );
-
     const isNewIP = ipResult.rowCount === 0;
 
-    // ✅ Génère OTP seulement si IP nouvelle OU is_otp_verified = false
     const requiresOTP = !user.is_otp_verified || isNewIP;
 
     if (requiresOTP) {
       const code = Math.floor(100000 + Math.random() * 900000).toString();
-      
-  await pool.query('DELETE FROM otps WHERE user_id = $1', [user.id]);
+      await pool.query('DELETE FROM otps WHERE user_id = $1', [user.id]);
 
-    
-  const otpInsert = await pool.query(
-  `INSERT INTO otps (user_id, code, created_at, expires_at)
-   VALUES ($1, $2, NOW(), NOW() + INTERVAL '10 minutes')`,
-  [user.id, code]
-    );
-    console.log('✅ OTP enregistré:', otpInsert.rowCount);
-
+      const otpInsert = await pool.query(
+        `INSERT INTO otps (user_id, code, created_at, expires_at)
+         VALUES ($1, $2, NOW(), NOW() + INTERVAL '10 minutes')`,
+        [user.id, code]
+      );
+      console.log('✅ OTP enregistré:', otpInsert.rowCount);
       console.log(`📩 Code OTP pour ${user.username} : ${code}`);
     } else {
-      // ✅ Enregistre l'IP si déjà vérifié et connue
       await pool.query(
         'INSERT INTO login_history (user_id, ip_address) VALUES ($1, $2)',
         [user.id, ip]
@@ -231,26 +223,33 @@ export const login = async (req: Request, res: Response) => {
       { expiresIn: '1h' }
     );
 
-    res.status(200).json({
-  message: 'Connexion réussie',
-  requiresOTP,
-  token,
- user: {
-  id: user.id,
-  username: user.username,
-  email: user.email,
-  phone: user.phone,
-  first_name: user.first_name,
-  last_name: user.last_name,
-  photo_url: user.photo_url || null,
-  is_verified: user.is_verified || false,
-  verified_at: user.verified_at || null,
-  identity_verified: user.identity_verified || false,
-  is_otp_verified: user.is_otp_verified || false,
-  role: user.role || 'user',
-}
+    // Fonction pour masquer le username
+    const maskUsername = (name: string): string => {
+      if (name.length <= 4) return name;
+      const visible = name.slice(0, 4);
+      const masked = '*'.repeat(name.length - 4);
+      return visible + masked;
+    };
 
-});
+    res.status(200).json({
+      message: 'Connexion réussie',
+      requiresOTP,
+      token,
+      user: {
+        id: user.id,
+        username: maskUsername(user.username), // ← ici le username masqué
+        email: user.email,
+        phone: user.phone,
+        first_name: user.first_name,
+        last_name: user.last_name,
+        photo_url: user.photo_url || null,
+        is_verified: user.is_verified || false,
+        verified_at: user.verified_at || null,
+        identity_verified: user.identity_verified || false,
+        is_otp_verified: user.is_otp_verified || false,
+        role: user.role || 'user',
+      }
+    });
 
   } catch (error: any) {
     console.error('❌ Erreur dans login:', error.message);
@@ -258,6 +257,7 @@ export const login = async (req: Request, res: Response) => {
     res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
+
 
 // ➤ Récupération de profil
 export const getProfile = async (req: Request, res: Response) => { 
@@ -493,39 +493,6 @@ export const resendOTP: RequestHandler = async (req, res) => {
 
     const user = userRes.rows[0];
 
-    // Vérifie les tentatives dans les 15 dernières minutes
-    const since = new Date(Date.now() - 15 * 60 * 1000);
-    const attemptsRes = await pool.query(
-      `SELECT COUNT(*) FROM otps 
-       WHERE user_id = $1 AND created_at > $2`,
-      [userId, since]
-    );
-
-    const attempts = parseInt(attemptsRes.rows[0].count);
-
-    if (attempts >= 3) {
-      // Bloque temporairement 30 minutes dans une table de blocage (ou attribut user)
-      await pool.query(
-        `INSERT INTO otp_blocks (user_id, blocked_until) 
-         VALUES ($1, $2) 
-         ON CONFLICT (user_id) DO UPDATE SET blocked_until = $2`,
-        [userId, new Date(Date.now() + 30 * 60 * 1000)]
-      );
-
-      // Envoyer email et SMS d'alerte
-      await sendEmail({
-        to: user.email,
-        subject: 'Tentatives excessives de vérification - Cash Hay',
-        text: `Nous avons détecté plus de 3 tentatives de code en 15 minutes. Si ce n'était pas vous, cliquez ici pour signaler : Y/N. Votre compte est temporairement bloqué 30 minutes.`,
-      });
-
-      await sendSMS(user.phone, `Cash Hay : Trop de tentatives OTP. Votre compte est bloqué 30 min. Répondez Y ou N pour valider.`);
-
-      return res.status(429).json({
-        error: 'Trop de tentatives. Votre compte est bloqué 30 minutes. Contactez le support si besoin.'
-      });
-    }
-
     // Vérifie si le compte est bloqué
     const blockCheck = await pool.query(
       `SELECT blocked_until FROM otp_blocks WHERE user_id = $1`,
@@ -536,14 +503,48 @@ export const resendOTP: RequestHandler = async (req, res) => {
       const blockedUntil = new Date(blockCheck.rows[0].blocked_until);
       if (blockedUntil > new Date()) {
         return res.status(403).json({
-          error: `Ce compte est temporairement bloqué jusqu'à ${blockedUntil.toLocaleTimeString()}`
+          error: `Ce compte est temporairement bloqué jusqu'à ${blockedUntil.toLocaleTimeString()}`,
         });
       }
     }
 
+    // Vérifie les tentatives OTP dans les 15 dernières minutes
+    const since = new Date(Date.now() - 15 * 60 * 1000);
+    const attemptsRes = await pool.query(
+      `SELECT COUNT(*) FROM otps 
+       WHERE user_id = $1 AND created_at > $2`,
+      [userId, since]
+    );
+
+    const attempts = parseInt(attemptsRes.rows[0].count);
+
+    if (attempts >= 3) {
+      const blockUntil = new Date(Date.now() + 30 * 60 * 1000); // Bloqué 30 min
+
+      await pool.query(
+        `INSERT INTO otp_blocks (user_id, blocked_until) 
+         VALUES ($1, $2) 
+         ON CONFLICT (user_id) DO UPDATE SET blocked_until = $2`,
+        [userId, blockUntil]
+      );
+
+      await sendEmail({
+        to: user.email,
+        subject: 'Tentatives excessives de vérification - Cash Hay',
+        text: `Nous avons détecté plus de 3 tentatives de code en 15 minutes. Si ce n'était pas vous, cliquez ici pour signaler : Y/N. Votre compte est temporairement bloqué 30 minutes.`,
+      });
+
+      await sendSMS(user.phone, `Cash Hay : Trop de tentatives OTP. Votre compte est bloqué 30 min. Répondez Y ou N pour valider.`);
+
+      return res.status(429).json({
+        error: 'Trop de tentatives. Votre compte est bloqué 30 minutes. Contactez le support si besoin.',
+      });
+    }
+
+    // ✅ Génère et enregistre le nouveau code
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     const now = new Date();
-    const expiresAt = new Date(now.getTime() + 10 * 60000); // 10 minutes
+    const expiresAt = new Date(now.getTime() + 10 * 60000); // expire dans 10 minutes
 
     await pool.query(
       'INSERT INTO otps (user_id, code, created_at, expires_at) VALUES ($1, $2, $3, $4)',
@@ -558,12 +559,13 @@ export const resendOTP: RequestHandler = async (req, res) => {
 
     await sendSMS(user.phone, `Cash Hay : Votre code OTP est : ${otp}`);
 
-    res.status(200).json({ message: 'Code renvoyé avec succès.' });
+    return res.status(200).json({ message: 'Code renvoyé avec succès.' });
   } catch (err) {
-    console.error('Erreur lors du renvoi OTP:', err);
-    res.status(500).json({ error: 'Erreur serveur lors du renvoi du code.' });
+    console.error('❌ Erreur lors du renvoi OTP:', err);
+    return res.status(500).json({ error: 'Erreur serveur lors du renvoi du code.' });
   }
 };
+
 // ➤ Confirmation de sécurité (réponse Y ou N
 
 export const confirmSuspiciousAttempt: RequestHandler = async (req: Request, res: Response) => {

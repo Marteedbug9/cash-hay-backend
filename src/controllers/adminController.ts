@@ -100,7 +100,6 @@ export const validateIdentity = async (req: Request, res: Response) => {
     if (result.rowCount === 0) {
       return res.status(404).json({ error: "Utilisateur non trouvé." });
     }
-    // Audit log (optionnel)
     await pool.query(
       `INSERT INTO audit_logs (user_id, action, details)
        VALUES ($1, $2, $3)`,
@@ -123,7 +122,6 @@ export const reactivateIdentityRequest = async (req: Request, res: Response) => 
     if (result.rowCount === 0) {
       return res.status(404).json({ error: "Utilisateur non trouvé." });
     }
-    // Audit log
     await pool.query(
       `INSERT INTO audit_logs (user_id, action, details)
        VALUES ($1, $2, $3)`,
@@ -132,5 +130,28 @@ export const reactivateIdentityRequest = async (req: Request, res: Response) => 
     res.json({ message: "Soumission d'identité réactivée.", user: result.rows[0] });
   } catch (err) {
     res.status(505).json({ error: "Erreur lors de la réactivation." });
+  }
+};
+
+// ➤ Débloquer un utilisateur bloqué pour OTP
+export const unblockUserOTP = async (req: Request, res: Response) => {
+  const { userId } = req.body;
+  if (!userId) {
+    return res.status(400).json({ error: 'ID utilisateur requis.' });
+  }
+  try {
+    const result = await pool.query('DELETE FROM otp_blocks WHERE user_id = $1', [userId]);
+    if (result.rowCount === 0) {
+      return res.status(404).json({ message: 'Aucun blocage trouvé pour cet utilisateur.' });
+    }
+    await pool.query(
+      `INSERT INTO audit_logs (user_id, action, details)
+       VALUES ($1, $2, $3)`,
+      [userId, 'unblock_otp', 'Déblocage OTP effectué par admin']
+    );
+    return res.status(200).json({ message: 'Utilisateur débloqué avec succès.' });
+  } catch (err) {
+    console.error('❌ Erreur lors du déblocage OTP:', err);
+    return res.status(500).json({ error: 'Erreur serveur lors du déblocage.' });
   }
 };

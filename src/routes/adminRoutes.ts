@@ -238,4 +238,19 @@ router.get('/users/:id/contacts', verifyToken, verifyAdmin, async (req, res) => 
   }
 });
 
+router.post('/users/:id/unblock-otp', verifyToken, verifyAdmin, async (req, res) => {
+  const { id } = req.params;
+  try {
+    await pool.query('DELETE FROM otp_blocks WHERE user_id = $1', [id]);
+    await pool.query(
+      `INSERT INTO audit_logs (user_id, action, details)
+       VALUES ($1, $2, $3)`,
+      [id, 'unblock_otp', 'Déblocage manuel OTP effectué par un administrateur']
+    );
+    res.json({ message: 'Utilisateur débloqué pour OTP.' });
+  } catch (err) {
+    console.error('Erreur lors du déblocage OTP admin:', err);
+    res.status(500).json({ error: 'Erreur serveur.' });
+  }
+});
 export default router;
