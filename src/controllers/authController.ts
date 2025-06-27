@@ -366,15 +366,26 @@ export const verifyEmailForRecovery: RequestHandler = async (req: Request, res: 
 };
 
 // ➤ Réinitialisation mot de passe
-export const resetPassword: RequestHandler = async (req: Request, res: Response)  => {
+export const resetPassword: RequestHandler = async (req: Request, res: Response) => {
   const { userId, otp, newPassword } = req.body;
+
+  if (!userId || !otp || !newPassword) {
+    return res.status(400).json({ error: 'Champs requis.' });
+  }
+
+  const pwdRegex = /^(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$/;
+  if (!pwdRegex.test(newPassword)) {
+    return res.status(400).json({
+      error: "Le mot de passe doit contenir au moins 8 caractères, une majuscule, un chiffre et un symbole.",
+    });
+  }
 
   try {
     const result = await pool.query('SELECT recovery_code FROM users WHERE id = $1', [userId]);
     const user = result.rows[0];
 
     if (!user || user.recovery_code !== otp) {
-      return res.status(401).json({ error: 'Code OTP invalide.' });
+      return res.status(401).json({ error: 'Code OTP invalide ou expiré.' });
     }
 
     const hashedPassword = await bcrypt.hash(newPassword, 10);
@@ -383,12 +394,13 @@ export const resetPassword: RequestHandler = async (req: Request, res: Response)
       [hashedPassword, userId]
     );
 
-    res.json({ message: 'Mot de passe réinitialisé avec succès.' });
+    return res.json({ message: 'Mot de passe réinitialisé avec succès.' });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Erreur serveur.' });
+    console.error('Erreur resetPassword:', err);
+    return res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
+
 
 // ➤ Upload de pièce d'identité + activation
 export const uploadIdentity = async (req: Request, res: Response) => {
@@ -1190,24 +1202,29 @@ export const changePassword = async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Champs requis.' });
   }
 
-  // Critères: 8+ char, 1 Maj, 1 chiffre, 1 symbole
   const pwdRegex = /^(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$/;
   if (!pwdRegex.test(newPassword)) {
-    return res.status(400).json({ error: "Le mot de passe doit avoir min 8 caractères, 1 majuscule, 1 chiffre, 1 symbole." });
+    return res.status(400).json({
+      error: "Le mot de passe doit contenir au moins 8 caractères, une majuscule, un chiffre et un symbole.",
+    });
   }
 
   try {
-    const userRes = await pool.query('SELECT password FROM users WHERE id = $1', [userId]);
-    if (!userRes.rows.length) return res.status(404).json({ error: 'Utilisateur non trouvé.' });
+    const result = await pool.query('SELECT password_hash FROM users WHERE id = $1', [userId]);
+    const user = result.rows[0];
+    if (!user) return res.status(404).json({ error: 'Utilisateur non trouvé.' });
 
-    const isValid = await bcrypt.compare(currentPassword, userRes.rows[0].password);
+    const isValid = await bcrypt.compare(currentPassword, user.password_hash);
     if (!isValid) return res.status(401).json({ error: 'Mot de passe actuel incorrect.' });
 
     const hashed = await bcrypt.hash(newPassword, 10);
-    await pool.query('UPDATE users SET password = $1 WHERE id = $2', [hashed, userId]);
-    res.json({ success: true, message: 'Mot de passe modifié.' });
+    await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [hashed, userId]);
+
+    return res.json({ success: true, message: 'Mot de passe modifié avec succès.' });
   } catch (err) {
     console.error('Erreur changePassword:', err);
-    res.status(500).json({ error: 'Erreur serveur.' });
+    return res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
+
+
