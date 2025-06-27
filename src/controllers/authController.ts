@@ -608,7 +608,7 @@ export const confirmSuspiciousAttempt: RequestHandler = async (req: Request, res
 
 // ➤ Vérification OTP après login
 
-export const verifyOTP: RequestHandler = async (req, res) => {
+export const verifyOTP: RequestHandler = async (req: Request, res: Response) => {
   const { userId, code } = req.body;
 
   try {
