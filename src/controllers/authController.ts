@@ -312,7 +312,7 @@ export const getProfile = async (req: Request, res: Response) => {
 
 
 // ➤ Démarrer récupération de compte
-export const startRecovery: RequestHandler = async (req: Request, res: Response)  => {
+export const startRecovery: RequestHandler = async (req: Request, res: Response) => {
   const { credentialType, value } = req.body;
 
   try {
@@ -327,13 +327,21 @@ export const startRecovery: RequestHandler = async (req: Request, res: Response)
 
     if (!user) return res.status(404).json({ error: 'Utilisateur non trouvé.' });
 
+    // 🔒 Insertion dans logs_security
+    await pool.query(
+      `INSERT INTO logs_security (user_id, action, ip_address, created_at)
+       VALUES ($1, $2, $3, NOW())`,
+      [user.id, 'start_recovery', req.ip]
+    );
+
     const maskedEmail = user.email.slice(0, 4) + '***@***';
     res.json({ message: 'Email masqué envoyé.', maskedEmail, userId: user.id });
   } catch (err) {
-    console.error(err);
+    console.error('❌ Erreur startRecovery:', err);
     res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
+
 
 // ➤ Envoi OTP pour récupération
 export const verifyEmailForRecovery: RequestHandler = async (req: Request, res: Response)  => {
@@ -369,35 +377,32 @@ export const verifyEmailForRecovery: RequestHandler = async (req: Request, res: 
 export const resetPassword: RequestHandler = async (req: Request, res: Response) => {
   const { userId, otp, newPassword } = req.body;
 
-  if (!userId || !otp || !newPassword) {
-    return res.status(400).json({ error: 'Champs requis.' });
-  }
-
-  const pwdRegex = /^(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$/;
-  if (!pwdRegex.test(newPassword)) {
-    return res.status(400).json({
-      error: "Le mot de passe doit contenir au moins 8 caractères, une majuscule, un chiffre et un symbole.",
-    });
-  }
-
   try {
-    const result = await pool.query('SELECT recovery_code FROM users WHERE id = $1', [userId]);
-    const user = result.rows[0];
-
-    if (!user || user.recovery_code !== otp) {
-      return res.status(401).json({ error: 'Code OTP invalide ou expiré.' });
-    }
-
-    const hashedPassword = await bcrypt.hash(newPassword, 10);
-    await pool.query(
-      'UPDATE users SET password_hash = $1, recovery_code = NULL WHERE id = $2',
-      [hashedPassword, userId]
+    const otpRes = await pool.query(
+      'SELECT * FROM otps WHERE user_id = $1 AND code = $2 ORDER BY created_at DESC LIMIT 1',
+      [userId, otp]
     );
 
-    return res.json({ message: 'Mot de passe réinitialisé avec succès.' });
+    if (otpRes.rows.length === 0 || new Date(otpRes.rows[0].expires_at) < new Date()) {
+      return res.status(400).json({ error: 'Code OTP invalide ou expiré.' });
+    }
+
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+    await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [passwordHash, userId]);
+
+    await pool.query('DELETE FROM otps WHERE user_id = $1', [userId]);
+
+    // 🔒 Log security
+    await pool.query(
+      `INSERT INTO logs_security (user_id, action, ip_address, created_at)
+       VALUES ($1, $2, $3, NOW())`,
+      [userId, 'reset_password', req.ip]
+    );
+
+    res.json({ message: 'Mot de passe réinitialisé avec succès.' });
   } catch (err) {
-    console.error('Erreur resetPassword:', err);
-    return res.status(500).json({ error: 'Erreur serveur.' });
+    console.error('❌ Erreur resetPassword:', err);
+    res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
 
@@ -486,7 +491,7 @@ export const uploadIdentity = async (req: Request, res: Response) => {
 
 // ➤ Renvoyer un code OTP
 
-export const resendOTP: RequestHandler = async (req, res) => {
+export const resendOTP: RequestHandler = async (req: Request, res: Response) => {
   const { userId } = req.body;
 
   if (!userId) {
@@ -494,10 +499,7 @@ export const resendOTP: RequestHandler = async (req, res) => {
   }
 
   try {
-    const userRes = await pool.query(
-      'SELECT email, phone FROM users WHERE id = $1',
-      [userId]
-    );
+    const userRes = await pool.query('SELECT email, phone FROM users WHERE id = $1', [userId]);
 
     if (userRes.rows.length === 0) {
       return res.status(404).json({ error: 'Utilisateur non trouvé.' });
@@ -505,12 +507,7 @@ export const resendOTP: RequestHandler = async (req, res) => {
 
     const user = userRes.rows[0];
 
-    // Vérifie si le compte est bloqué
-    const blockCheck = await pool.query(
-      `SELECT blocked_until FROM otp_blocks WHERE user_id = $1`,
-      [userId]
-    );
-
+    const blockCheck = await pool.query('SELECT blocked_until FROM otp_blocks WHERE user_id = $1', [userId]);
     if (blockCheck.rows.length > 0) {
       const blockedUntil = new Date(blockCheck.rows[0].blocked_until);
       if (blockedUntil > new Date()) {
@@ -520,22 +517,19 @@ export const resendOTP: RequestHandler = async (req, res) => {
       }
     }
 
-    // Vérifie les tentatives OTP dans les 15 dernières minutes
     const since = new Date(Date.now() - 15 * 60 * 1000);
     const attemptsRes = await pool.query(
-      `SELECT COUNT(*) FROM otps 
-       WHERE user_id = $1 AND created_at > $2`,
+      `SELECT COUNT(*) FROM otps WHERE user_id = $1 AND created_at > $2`,
       [userId, since]
     );
 
     const attempts = parseInt(attemptsRes.rows[0].count);
 
     if (attempts >= 3) {
-      const blockUntil = new Date(Date.now() + 30 * 60 * 1000); // Bloqué 30 min
-
+      const blockUntil = new Date(Date.now() + 30 * 60 * 1000);
       await pool.query(
-        `INSERT INTO otp_blocks (user_id, blocked_until) 
-         VALUES ($1, $2) 
+        `INSERT INTO otp_blocks (user_id, blocked_until)
+         VALUES ($1, $2)
          ON CONFLICT (user_id) DO UPDATE SET blocked_until = $2`,
         [userId, blockUntil]
       );
@@ -543,20 +537,19 @@ export const resendOTP: RequestHandler = async (req, res) => {
       await sendEmail({
         to: user.email,
         subject: 'Tentatives excessives de vérification - Cash Hay',
-        text: `Nous avons détecté plus de 3 tentatives de code en 15 minutes. Si ce n'était pas vous, cliquez ici pour signaler : Y/N. Votre compte est temporairement bloqué 30 minutes.`,
+        text: `Nous avons détecté plus de 3 tentatives de code. Votre compte est temporairement bloqué 30 minutes.`,
       });
 
-      await sendSMS(user.phone, `Cash Hay : Trop de tentatives OTP. Votre compte est bloqué 30 min. Répondez Y ou N pour valider.`);
+      await sendSMS(user.phone, `Cash Hay : Trop de tentatives OTP. Compte bloqué 30 min.`);
 
       return res.status(429).json({
         error: 'Trop de tentatives. Votre compte est bloqué 30 minutes. Contactez le support si besoin.',
       });
     }
 
-    // ✅ Génère et enregistre le nouveau code
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     const now = new Date();
-    const expiresAt = new Date(now.getTime() + 10 * 60000); // expire dans 10 minutes
+    const expiresAt = new Date(now.getTime() + 10 * 60000);
 
     await pool.query(
       'INSERT INTO otps (user_id, code, created_at, expires_at) VALUES ($1, $2, $3, $4)',
@@ -570,6 +563,13 @@ export const resendOTP: RequestHandler = async (req, res) => {
     });
 
     await sendSMS(user.phone, `Cash Hay : Votre code OTP est : ${otp}`);
+
+    // 🔒 Log security
+    await pool.query(
+      `INSERT INTO logs_security (user_id, action, ip_address, created_at)
+       VALUES ($1, $2, $3, NOW())`,
+      [userId, 'resend_otp', req.ip]
+    );
 
     return res.status(200).json({ message: 'Code renvoyé avec succès.' });
   } catch (err) {
@@ -608,85 +608,39 @@ export const confirmSuspiciousAttempt: RequestHandler = async (req: Request, res
 
 // ➤ Vérification OTP après login
 
-export const verifyOTP: RequestHandler = async (req: Request, res: Response)  => {
+export const verifyOTP: RequestHandler = async (req, res) => {
   const { userId, code } = req.body;
-
-  if (!userId || !code) {
-    return res.status(400).json({ error: 'ID utilisateur et code requis.' });
-  }
 
   try {
     const otpRes = await pool.query(
-      'SELECT code, expires_at FROM otps WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1',
-      [userId]
+      'SELECT * FROM otps WHERE user_id = $1 AND code = $2 ORDER BY created_at DESC LIMIT 1',
+      [userId, code]
     );
 
     if (otpRes.rows.length === 0) {
-      console.log('⛔ Aucun code OTP trouvé pour cet utilisateur');
-      return res.status(400).json({ valid: false, reason: 'Expired or invalid code.' });
+      return res.status(400).json({ error: 'Code incorrect ou expiré.' });
     }
 
-    const { code: storedCode, expires_at } = otpRes.rows[0];
-    const now = new Date();
-
-    if (now > new Date(expires_at)) {
-      console.log('⏰ Code OTP expiré');
-      return res.status(400).json({ valid: false, reason: 'Code expiré.' });
+    const otp = otpRes.rows[0];
+    if (new Date(otp.expires_at) < new Date()) {
+      return res.status(400).json({ error: 'Code expiré.' });
     }
 
-    const receivedCode = String(code).trim();
-    const expectedCode = String(storedCode).trim();
-
-    console.log(`📥 Code reçu: "${receivedCode}" (longueur: ${receivedCode.length})`);
-    console.log(`📦 Code attendu: "${expectedCode}" (longueur: ${expectedCode.length})`);
-
-    if (receivedCode !== expectedCode) {
-      console.log('❌ Code incorrect (comparaison échouée)');
-      return res.status(400).json({ error: 'Code invalide.' });
-    }
-
-    // ✅ Marquer l’utilisateur comme vérifié
-    await pool.query(
-      'UPDATE users SET is_otp_verified = true WHERE id = $1',
-      [userId]
-    );
-
-    // ✅ Supprimer les OTP anciens
     await pool.query('DELETE FROM otps WHERE user_id = $1', [userId]);
 
-    // 🔁 Regénérer le token
-    const userRes = await pool.query('SELECT * FROM users WHERE id = $1', [userId]);
-    const user = userRes.rows[0];
-    const token = jwt.sign(
-      { id: user.id, email: user.email, role: user.role },
-      process.env.JWT_SECRET || 'devsecretkey',
-      { expiresIn: '24h' }
+    const user = await pool.query('SELECT id, username FROM users WHERE id = $1', [userId]);
+
+    // 🔒 Log security
+    await pool.query(
+      `INSERT INTO logs_security (user_id, action, ip_address, created_at)
+       VALUES ($1, $2, $3, NOW())`,
+      [userId, 'verify_otp', req.ip]
     );
 
-    console.log('✅ Code OTP validé avec succès');
-
-    return res.status(200).json({
-  token,
-  user: {
-  id: user.id,
-  username: user.username,
-  email: user.email,
-  phone: user.phone,
-  first_name: user.first_name,
-  last_name: user.last_name,
-  photo_url: user.photo_url || null,
-  is_verified: user.is_verified || false,
-  is_otp_verified: true,
-  identity_verified: user.identity_verified || false,
-  identity_request_enabled: user.identity_request_enabled ?? true,
-  role: user.role || 'user',
-}
-
-});
-
-  } catch (err: any) {
-    console.error('❌ Erreur vérification OTP:', err.message);
-    return res.status(500).json({ error: 'Erreur serveur.' });
+    res.json({ success: true, user: user.rows[0] });
+  } catch (err) {
+    console.error('❌ Erreur verifyOTP:', err);
+    res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
 
