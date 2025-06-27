@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import pool from '../config/db';
 import { verifyToken, verifyAdmin } from '../middlewares/verifyToken';
+import { getAllPhysicalCards } from '../controllers/adminController';
 
 const router = Router();
 
@@ -253,4 +254,6 @@ router.post('/users/:id/unblock-otp', verifyToken, verifyAdmin, async (req, res)
     res.status(500).json({ error: 'Erreur serveur.' });
   }
 });
+
+router.get('/cards/physical', verifyAdmin, getAllPhysicalCards);
 export default router;

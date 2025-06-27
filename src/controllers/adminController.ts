@@ -9,18 +9,32 @@ export const getAllUsers = async (req: Request, res: Response) => {
         u.id, u.username, u.email, u.phone, u.role, u.is_verified, 
         u.is_blacklisted, u.is_deceased, u.identity_verified, u.created_at,
         pi.url AS profile_image,
-        m.contact AS member_contact
+        m.contact AS member_contact,
+        c.design_url AS card_design,
+        c.type AS card_type,
+        c.created_at AS card_requested_at
       FROM users u
       LEFT JOIN profile_images pi ON pi.user_id = u.id AND pi.is_current = true
       LEFT JOIN members m ON m.user_id = u.id
+
+      LEFT JOIN LATERAL (
+        SELECT *
+        FROM user_cards
+        WHERE user_id = u.id AND type = 'physique'
+        ORDER BY created_at DESC
+        LIMIT 1
+      ) c ON true
+
       ORDER BY u.created_at DESC
     `);
+
     res.json(users.rows);
   } catch (err) {
     console.error('Erreur getAllUsers:', err);
     res.status(501).json({ error: 'Erreur serveur.' });
   }
 };
+
 
 // ➤ Détail complet d'un utilisateur (pour AdminUserDetailScreen)
 export const getUserDetail = async (req: Request, res: Response) => {
@@ -153,5 +167,21 @@ export const unblockUserOTP = async (req: Request, res: Response) => {
   } catch (err) {
     console.error('❌ Erreur lors du déblocage OTP:', err);
     return res.status(500).json({ error: 'Erreur serveur lors du déblocage.' });
+  }
+};
+
+export const getAllPhysicalCards = async (req: Request, res: Response) => {
+  try {
+    const result = await pool.query(
+      `SELECT uc.*, u.first_name, u.last_name, u.email
+       FROM user_cards uc
+       JOIN users u ON uc.user_id = u.id
+       WHERE uc.type = 'physique'
+       ORDER BY uc.created_at DESC`
+    );
+    res.status(200).json({ cards: result.rows });
+  } catch (err) {
+    console.error('❌ Erreur récupération cartes physiques:', err);
+    res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
