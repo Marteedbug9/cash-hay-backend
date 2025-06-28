@@ -218,10 +218,16 @@ export const login = async (req: Request, res: Response) => {
     }
 
     const token = jwt.sign(
-      { id: user.id, email: user.email, role: user.role || 'user' },
-      process.env.JWT_SECRET || 'devsecretkey',
-      { expiresIn: '1h' }
-    );
+  {
+    id: user.id,
+    email: user.email,
+    role: user.role || 'user',
+    is_otp_verified: user.is_otp_verified || false, // ← ajoute ceci
+  },
+  process.env.JWT_SECRET || 'devsecretkey',
+  { expiresIn: '1h' }
+);
+
 
     // Fonction pour masquer le username
     const maskUsername = (name: string): string => {
@@ -706,9 +712,14 @@ export const verifyOTP: RequestHandler = async (req: Request, res: Response) => 
     const userRes = await pool.query('SELECT * FROM users WHERE id = $1', [userId]);
     const user = userRes.rows[0];
     const token = jwt.sign(
-      { id: user.id, email: user.email, role: user.role },
-      process.env.JWT_SECRET || 'devsecretkey',
-      { expiresIn: '24h' }
+  {
+    id: user.id,
+    email: user.email,
+    role: user.role,
+    is_otp_verified: true, // ✅ Ajoute ce champ ici
+  },
+  process.env.JWT_SECRET || 'devsecretkey',
+  { expiresIn: '24h' }
     );
 
     // ✅ Loguer l’action
