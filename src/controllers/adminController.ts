@@ -242,3 +242,42 @@ export const approveCustomCard = async (req: Request, res: Response) => {
     return res.status(500).json({ error: "Erreur serveur." });
   }
 };
+
+export const getUserAllCards = async (req: Request, res: Response) => {
+  const { id } = req.params; // user_id
+
+  try {
+    const result = await pool.query(
+      `SELECT 
+         uc.id AS user_card_id,
+         uc.type AS custom_type,
+         uc.design_url,
+         uc.price AS custom_price,
+         uc.label,
+         uc.created_at AS design_created_at,
+         uc.is_approved,
+         uc.approved_by,
+         uc.approved_at,
+         c.id AS card_id,
+         c.type AS real_card_type,
+         c.status AS card_status,
+         c.card_number,
+         c.expiry_date,
+         c.created_at AS card_created_at,
+         c.is_locked,
+         ct.label AS style_label,
+         ct.price AS default_style_price
+       FROM user_cards uc
+       LEFT JOIN cards c ON uc.card_id = c.id
+       LEFT JOIN card_types ct ON LOWER(uc.style_id) = LOWER(ct.type)
+       WHERE uc.user_id = $1
+       ORDER BY uc.created_at DESC`,
+      [id]
+    );
+
+    res.json({ cards: result.rows });
+  } catch (err) {
+    console.error('❌ Erreur récupération toutes les cartes:', err);
+    res.status(500).json({ error: 'Erreur serveur.' });
+  }
+};

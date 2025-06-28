@@ -152,15 +152,29 @@ export const getUserCards = async (req: Request, res: Response) => {
 
   try {
     const result = await pool.query(
-      `SELECT * FROM user_cards WHERE user_id = $1 ORDER BY created_at DESC`,
+      `SELECT 
+         uc.*, 
+         ct.label AS card_label,
+         ct.price AS default_price,
+         c.status AS card_status,
+         c.is_locked,
+         c.card_number,
+         c.expiry_date
+       FROM user_cards uc
+       LEFT JOIN card_types ct ON uc.style_id = ct.type
+       LEFT JOIN cards c ON uc.card_id = c.id
+       WHERE uc.user_id = $1
+       ORDER BY uc.created_at DESC`,
       [userId]
     );
+
     res.json({ cards: result.rows });
   } catch (err) {
     console.error('❌ Erreur récupération cartes:', err);
     res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
+
 
 
 export const getCurrentCard = async (req: Request, res: Response) => {
