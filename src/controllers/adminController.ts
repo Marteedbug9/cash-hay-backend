@@ -39,33 +39,70 @@ export const getAllUsers = async (req: Request, res: Response) => {
 // ➤ Détail complet d'un utilisateur (pour AdminUserDetailScreen)
 export const getUserDetail = async (req: Request, res: Response) => {
   const { id } = req.params;
+
   try {
-    const { rows } = await pool.query(`
+    // 1. Info principale de l'utilisateur
+    const userRes = await pool.query(`
       SELECT 
         u.id, u.username, u.email, u.phone, u.first_name, u.last_name, u.address,
         u.birth_date, u.birth_country, u.birth_place, u.id_type, u.id_number, 
         u.id_issue_date, u.id_expiry_date, u.role, u.is_verified, 
         u.identity_verified, u.is_blacklisted, u.is_deceased, u.city, u.department, u.country, u.zip_code, 
         u.face_url, u.document_url,
-        pi.url AS profile_image,
-        m.contact AS member_contact,
-        c.card_number, c.type AS card_type, c.status AS card_status, c.expiry_date, c.created_at as card_created_at
+        pi.url AS profile_photo
       FROM users u
       LEFT JOIN profile_images pi ON pi.user_id = u.id AND pi.is_current = true
-      LEFT JOIN members m ON m.user_id = u.id
-      LEFT JOIN cards c ON c.user_id = u.id AND c.status IN ('active', 'pending')
       WHERE u.id = $1
       LIMIT 1
     `, [id]);
-    if (!rows.length) {
+
+    if (!userRes.rows.length) {
       return res.status(404).json({ error: 'Utilisateur non trouvé.' });
     }
-    res.json(rows[0]);
+
+    const user = userRes.rows[0];
+
+    // 2. Contacts liés (members.contact)
+    const contactsRes = await pool.query(
+      `SELECT contact FROM members WHERE user_id = $1`,
+      [id]
+    );
+    user.contacts = contactsRes.rows.map(row => row.contact);
+
+    // 3. Cartes (user_cards + card_types + cards)
+    const cardsRes = await pool.query(`
+      SELECT 
+        uc.*, 
+        ct.label AS style_label,
+        ct.price AS default_price,
+        c.status,
+        c.is_locked,
+        c.card_number,
+        c.expiry_date,
+        c.created_at AS requested_at
+      FROM user_cards uc
+      LEFT JOIN card_types ct ON uc.style_id = ct.type
+      LEFT JOIN cards c ON uc.card_id = c.id
+      WHERE uc.user_id = $1
+      ORDER BY uc.created_at DESC
+    `, [id]);
+    user.cards = cardsRes.rows;
+
+    // 4. Audit logs
+    const auditRes = await pool.query(
+      `SELECT * FROM audit_logs WHERE user_id = $1 ORDER BY created_at DESC LIMIT 30`,
+      [id]
+    );
+    user.audit_logs = auditRes.rows;
+
+    // ✅ Résultat final
+    res.json(user);
   } catch (err) {
-    console.error('Erreur getUserDetail:', err);
+    console.error('❌ Erreur getUserDetail:', err);
     res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
+
 
 // ➤ Activer / désactiver un compte utilisateur
 export const setUserVerified = async (req: Request, res: Response) => {
