@@ -11,7 +11,9 @@ import {
   activateCard,
   selectCardModel,
   getLatestCustomCard,
-  assignPhysicalCard
+  assignPhysicalCard,
+  hasCard,
+  requestPhysicalCustomCard
 } from '../controllers/cardController';
 import { verifyToken } from '../middlewares/verifyToken';
 
@@ -31,6 +33,9 @@ router.post('/activate', verifyToken, activateCard);
 router.post('/select', verifyToken, selectCardModel);
 router.get('/latest-custom', verifyToken, getLatestCustomCard);
 router.post('/admin/assign-physical', verifyToken, assignPhysicalCard);
+router.get('/has-card', verifyToken, hasCard);
+router.post('/request-physical-custom', verifyToken, requestPhysicalCustomCard);
+
 
 
 

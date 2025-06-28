@@ -185,3 +185,60 @@ export const getAllPhysicalCards = async (req: Request, res: Response) => {
     res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
+
+// ➤ Récupère toutes les cartes personnalisées d’un utilisateur
+export const getUserCustomCards = async (req: Request, res: Response) => {
+  const { id } = req.params;
+  try {
+    const result = await pool.query(
+      `SELECT style_id, type, price, design_url, created_at
+       FROM user_cards
+       WHERE user_id = $1
+       ORDER BY created_at DESC`,
+      [id]
+    );
+    res.status(200).json({ cards: result.rows });
+  } catch (err) {
+    console.error('❌ Erreur récupération cartes perso:', err);
+    res.status(500).json({ error: 'Erreur serveur.' });
+  }
+};
+
+export const allowCardRequest = async (req: Request, res: Response) => {
+  const userId = req.params.id;
+
+  try {
+    await pool.query(
+      `UPDATE users SET card_request_allowed = true WHERE id = $1`,
+      [userId]
+    );
+    res.json({ message: 'L’utilisateur peut à nouveau demander une carte.' });
+  } catch (err) {
+    console.error('❌ Erreur admin autorisation:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+};
+
+export const approveCustomCard = async (req: Request, res: Response) => {
+  const { cardId } = req.params;
+  const adminId = req.user?.id;
+
+  try {
+    const result = await pool.query(
+      `UPDATE user_cards
+       SET is_approved = true, approved_by = $1, approved_at = NOW()
+       WHERE id = $2 AND type = 'physique'
+       RETURNING *`,
+      [adminId, cardId]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: "Carte non trouvée ou déjà approuvée." });
+    }
+
+    return res.json({ message: "Carte personnalisée approuvée avec succès." });
+  } catch (err) {
+    console.error('❌ Erreur approbation carte personnalisée :', err);
+    return res.status(500).json({ error: "Erreur serveur." });
+  }
+};

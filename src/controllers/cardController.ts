@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import pool from '../config/db';
 
+
 // 🟢 Demande de carte gratuite, paiement après 48h
 export const requestCard = async (req: Request, res: Response) => {
   const client = await pool.connect();
@@ -83,6 +84,16 @@ export const requestPhysicalCard = async (req: Request, res: Response) => {
   try {
     const userId = req.user?.id;
 
+    // Vérifie si l'utilisateur est autorisé
+    const { rows: userRows } = await client.query(
+      'SELECT card_request_allowed FROM users WHERE id = $1',
+      [userId]
+    );
+
+    if (!userRows[0]?.card_request_allowed) {
+      return res.status(403).json({ error: "Vous n’êtes pas autorisé à faire une nouvelle demande de carte. Contactez un administrateur." });
+    }
+
     // Vérifie si déjà une carte physique en cours
     const { rows: existingPhysical } = await client.query(
       'SELECT * FROM cards WHERE user_id = $1 AND type = $2 AND status IN ($3, $4)',
@@ -92,11 +103,17 @@ export const requestPhysicalCard = async (req: Request, res: Response) => {
       return res.status(400).json({ error: "Vous avez déjà une carte physique en cours ou active." });
     }
 
-    // Insère la demande de carte physique (status = pending)
+    // Insère la demande de carte physique
     await client.query(
       `INSERT INTO cards (user_id, type, status, is_locked, requested_at)
        VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)`,
       [userId, 'physical', 'pending', false]
+    );
+
+    // Bloque les futures demandes jusqu'à validation
+    await client.query(
+      'UPDATE users SET card_request_allowed = false WHERE id = $1',
+      [userId]
     );
 
     return res.json({ message: "Demande de carte physique enregistrée. Vous serez notifié lors de la validation." });
@@ -274,5 +291,53 @@ export const assignPhysicalCard = async (req: Request, res: Response) => {
   } catch (err) {
     console.error('❌ Erreur assignation carte physique:', err);
     res.status(500).json({ error: 'Erreur serveur.' });
+  }
+};
+
+
+export const hasCard = async (req: Request, res: Response) => {
+  const userId = req.user?.id;
+
+  try {
+    const { rows } = await pool.query(
+      `SELECT id FROM user_cards WHERE user_id = $1 LIMIT 1`,
+      [userId]
+    );
+
+    res.json({ hasCard: rows.length > 0 });
+  } catch (err) {
+    console.error('❌ Erreur vérification carte:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+};
+
+export const requestPhysicalCustomCard = async (req: Request, res: Response) => {
+  const userId = req.user?.id;
+  const { design_url } = req.body;
+
+  if (!design_url) {
+    return res.status(400).json({ error: "URL de design manquante." });
+  }
+
+  try {
+    const { rows: existing } = await pool.query(
+      `SELECT * FROM cards WHERE user_id = $1 AND type = 'physical' AND status IN ('pending', 'active')`,
+      [userId]
+    );
+    if (existing.length > 0) {
+      return res.status(400).json({ error: "Une carte physique est déjà en cours ou active." });
+    }
+
+    // Stocke dans `user_cards` pour que l’admin voie la personnalisation
+    await pool.query(
+      `INSERT INTO user_cards (user_id, design_url, type, style_id, price, status)
+       VALUES ($1, $2, 'physical', 'custom', 0, 'pending')`,
+      [userId, design_url]
+    );
+
+    res.json({ message: "Demande personnalisée enregistrée." });
+  } catch (err) {
+    console.error("❌ Erreur enregistrement carte:", err);
+    res.status(500).json({ error: "Erreur serveur." });
   }
 };
