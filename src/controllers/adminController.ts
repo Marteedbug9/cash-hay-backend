@@ -92,13 +92,14 @@ export const getUserDetail = async (req: Request, res: Response) => {
     c.type AS card_type,
     c.account_type
   FROM user_cards uc
-  LEFT JOIN card_types ct ON uc.style_id = ct.type
+  LEFT JOIN card_types ct ON uc.style_id = ct.id -- ✅ correction ici
   LEFT JOIN cards c ON uc.card_id = c.id
   WHERE uc.user_id = $1
-  AND uc.design_url IS NOT NULL
+    AND uc.design_url IS NOT NULL
   ORDER BY uc.created_at DESC
   LIMIT 1
 `, [id]);
+
 
 
     user.cards = cardsRes.rows;
