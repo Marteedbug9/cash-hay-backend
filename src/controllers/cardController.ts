@@ -145,16 +145,17 @@ export const requestPhysicalCard = async (req: Request, res: Response) => {
 
 export const saveCustomCard = async (req: Request, res: Response) => {
   const userId = req.user?.id;
-  const { style_id, type, price, design_url } = req.body;
+  const { style_id, type, price, design_url, label, card_name } = req.body;
 
-  if (!style_id || !type || !price || !design_url)
+  if (!style_id || !type || !price || !design_url || !label)
     return res.status(400).json({ error: 'Champs manquants.' });
 
   try {
     await pool.query(
-      `INSERT INTO user_cards (user_id, style_id, type, price, design_url)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [userId, style_id, type, price, design_url]
+      `INSERT INTO user_cards 
+        (user_id, style_id, type, price, design_url, label, is_current) 
+       VALUES ($1, $2, $3, $4, $5, $6, true)`,
+      [userId, style_id, type, price, design_url, label]
     );
     res.status(201).json({ message: 'Carte enregistrée avec succès.' });
   } catch (err) {
@@ -247,37 +248,37 @@ export const activateCard = async (req: Request, res: Response) => {
 
 export const selectCardModel = async (req: Request, res: Response) => {
   const userId = req.user?.id;
-  const { card_name, is_custom, design_url, style_id, price } = req.body;
+  const { style_id, label, price, design_url, is_custom } = req.body;
 
-  if (!card_name) return res.status(400).json({ error: 'Nom de carte requis.' });
+  if (!style_id || !label || !price) {
+    return res.status(400).json({ error: 'Champs manquants.' });
+  }
+
+  // Si carte custom, il faut le design_url
+  if (is_custom && !design_url) {
+    return res.status(400).json({ error: 'design_url requis pour une carte personnalisée.' });
+  }
 
   try {
-    if (is_custom) {
-      // Enregistrement d'une carte personnalisée
-      if (!design_url || !style_id || !price) {
-        return res.status(400).json({ error: 'Détails de personnalisation manquants.' });
-      }
-
-      await pool.query(
-        `INSERT INTO user_cards (user_id, style_id, type, price, design_url, label)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        [userId, style_id, 'custom', price, design_url, card_name]
-      );
-    } else {
-      // Enregistrement d'une sélection de modèle simple
-      await pool.query(
-        `INSERT INTO user_cards (user_id, style_id, type, price, design_url, label)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        [userId, style_id || null, 'classic', price || 0, null, card_name]
-      );
-    }
-
-    return res.json({ message: 'Carte enregistrée avec succès.' });
+    await pool.query(
+      `INSERT INTO user_cards (user_id, style_id, type, price, design_url, label, is_current)
+       VALUES ($1, $2, $3, $4, $5, $6, true)`,
+      [
+        userId,
+        style_id,
+        is_custom ? 'custom' : 'classic',
+        price,
+        is_custom ? design_url : null, // design_url seulement pour custom
+        label,
+      ]
+    );
+    res.json({ message: 'Carte enregistrée avec succès.' });
   } catch (err) {
-    console.error('❌ Erreur enregistrement carte :', err);
-    return res.status(500).json({ error: 'Erreur serveur.' });
+    console.error(err);
+    res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
+
 
 
 export const getLatestCustomCard = async (req: Request, res: Response) => {
@@ -372,3 +373,6 @@ export const requestPhysicalCustomCard = async (req: Request, res: Response) => 
     res.status(500).json({ error: "Erreur serveur." });
   }
 };
+
+// POST /api/cards/select-model
+
