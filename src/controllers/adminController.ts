@@ -72,7 +72,16 @@ export const getUserDetail = async (req: Request, res: Response) => {
     // 3. Cartes (user_cards + card_types + cards)
     const cardsRes = await pool.query(`
       SELECT 
-        uc.*, 
+        uc.id,
+        uc.type,
+        uc.style_id,
+        uc.price AS custom_price,
+        uc.design_url, -- ✅ Important pour afficher l’image
+        uc.created_at,
+        uc.is_current,
+        uc.is_approved,
+        uc.approved_by,
+        uc.approved_at,
         ct.label AS style_label,
         ct.price AS default_price,
         c.status,
