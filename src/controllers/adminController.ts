@@ -71,30 +71,33 @@ export const getUserDetail = async (req: Request, res: Response) => {
 
     // 3. Cartes (user_cards + card_types + cards)
     const cardsRes = await pool.query(`
-      SELECT 
-        uc.id,
-        uc.type,
-        uc.style_id,
-        uc.price AS custom_price,
-        uc.design_url, -- ✅ Important pour afficher l’image
-        uc.created_at,
-        uc.is_current,
-        uc.is_approved,
-        uc.approved_by,
-        uc.approved_at,
-        ct.label AS style_label,
-        ct.price AS default_price,
-        c.status,
-        c.is_locked,
-        c.card_number,
-        c.expiry_date,
-        c.created_at AS requested_at
-      FROM user_cards uc
-      LEFT JOIN card_types ct ON uc.style_id = ct.type
-      LEFT JOIN cards c ON uc.card_id = c.id
-      WHERE uc.user_id = $1
-      ORDER BY uc.created_at DESC
-    `, [id]);
+  SELECT 
+    uc.id,
+    uc.type,
+    uc.style_id,
+    uc.price AS custom_price,
+    uc.design_url,
+    uc.created_at,
+    uc.is_current,
+    uc.is_approved,
+    uc.approved_by,
+    uc.approved_at,
+    ct.label AS style_label,
+    ct.price AS default_price,
+    c.status,
+    c.is_locked,
+    c.card_number,
+    c.expiry_date,
+    c.created_at AS requested_at,
+    c.type AS card_type,
+    c.account_type
+  FROM user_cards uc
+  LEFT JOIN card_types ct ON uc.style_id = ct.type
+  LEFT JOIN cards c ON uc.card_id = c.id
+  WHERE uc.user_id = $1
+  ORDER BY uc.created_at DESC
+`, [id]);
+
     user.cards = cardsRes.rows;
 
     // 4. Audit logs
