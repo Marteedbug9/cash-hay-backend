@@ -77,6 +77,7 @@ export const getUserDetail = async (req: Request, res: Response) => {
     uc.style_id,
     uc.price AS custom_price,
     uc.design_url,
+    uc.is_printed,
     uc.created_at,
     uc.is_current,
     uc.is_approved,
@@ -98,6 +99,32 @@ export const getUserDetail = async (req: Request, res: Response) => {
   ORDER BY uc.created_at DESC
 `, [id]);
 
+// 2.5 Dernière carte physique à imprimer (priorité carte personnalisée validée)
+const printCardRes = await pool.query(`
+  SELECT 
+    uc.id AS user_card_id,
+    uc.type AS custom_type,
+    uc.design_url,
+    uc.style_id,
+    ct.label AS style_label,
+    ct.image_url AS style_image_url, -- si tu stockes les modèles par défaut ici
+    uc.is_approved,
+    c.card_number,
+    c.expiry_date,
+    c.status,
+    c.type AS card_type,
+    c.account_type
+  FROM user_cards uc
+  LEFT JOIN card_types ct ON uc.style_id = ct.type
+  LEFT JOIN cards c ON uc.card_id = c.id
+  WHERE uc.user_id = $1
+    AND uc.type = 'physique'
+    AND uc.is_approved = true
+  ORDER BY uc.created_at DESC
+  LIMIT 1
+`, [id]);
+
+user.card_to_print = printCardRes.rows[0] || null;
 
 
 
@@ -329,6 +356,7 @@ export const getUserAllCards = async (req: Request, res: Response) => {
          uc.id AS user_card_id,
          uc.type AS custom_type,
          uc.design_url,
+         uc.is_printed,
          uc.price AS custom_price,
          uc.label,
          uc.created_at AS design_created_at,
@@ -358,3 +386,35 @@ export const getUserAllCards = async (req: Request, res: Response) => {
     res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
+
+
+export const markCardAsPrinted = async (req: Request, res: Response) => {
+  const { cardId } = req.params;
+  const adminId = req.user?.id;
+
+  try {
+    const result = await pool.query(
+      `UPDATE user_cards 
+       SET is_printed = true 
+       WHERE id = $1 
+       RETURNING *, user_id`,
+      [cardId]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: "Carte non trouvée." });
+    }
+
+    await pool.query(
+      `INSERT INTO audit_logs (user_id, action, details) 
+       VALUES ($1, 'mark_card_printed', $2)`,
+      [result.rows[0].user_id, `Carte ${cardId} marquée comme imprimée par admin ${adminId}`]
+    );
+
+    res.json({ message: 'Carte marquée comme imprimée.', card: result.rows[0] });
+  } catch (err) {
+    console.error('❌ Erreur markCardAsPrinted:', err);
+    res.status(500).json({ error: "Erreur serveur." });
+  }
+};
+

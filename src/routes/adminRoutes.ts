@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import pool from '../config/db';
 import { verifyToken, verifyAdmin } from '../middlewares/verifyToken';
-import { getAllPhysicalCards,getUserCustomCards,allowCardRequest,approveCustomCard,getUserAllCards } from '../controllers/adminController';
+import { getAllPhysicalCards,getUserCustomCards,allowCardRequest,approveCustomCard,getUserAllCards,markCardAsPrinted } from '../controllers/adminController';
 
 const router = Router();
 
@@ -267,6 +267,7 @@ router.put('/cards/custom/:cardId/approve', verifyToken, verifyAdmin, approveCus
 router.get('/users/:id/cards/full', verifyAdmin, getUserAllCards);
 
 
+router.put('/cards/:cardId/mark-printed', verifyAdmin, markCardAsPrinted);
 
 
 export default router;
