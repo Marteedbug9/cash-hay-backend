@@ -95,9 +95,9 @@ export const getUserDetail = async (req: Request, res: Response) => {
   LEFT JOIN card_types ct ON uc.style_id = ct.type
   LEFT JOIN cards c ON uc.card_id = c.id
   WHERE uc.user_id = $1
-  AND uc.design_url IS NOT NULL
   ORDER BY uc.created_at DESC
 `, [id]);
+
 
 
 
