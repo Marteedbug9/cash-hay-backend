@@ -77,6 +77,7 @@ export const getUserDetail = async (req: Request, res: Response) => {
     uc.style_id,
     uc.price AS custom_price,
     uc.design_url,
+    COALESCE(uc.design_url, ct.image_url) AS final_card_image,  -- <-- AJOUT ICI
     uc.is_printed,
     uc.created_at,
     uc.is_current,
@@ -85,6 +86,7 @@ export const getUserDetail = async (req: Request, res: Response) => {
     uc.approved_at,
     ct.label AS style_label,
     ct.price AS default_price,
+    ct.image_url AS style_image_url, -- <-- pour debug ou affichage si besoin
     c.status,
     c.is_locked,
     c.card_number,
@@ -99,15 +101,15 @@ export const getUserDetail = async (req: Request, res: Response) => {
   ORDER BY uc.created_at DESC
 `, [id]);
 
+
 // 2.5 Dernière carte physique à imprimer (priorité carte personnalisée validée)
 const printCardRes = await pool.query(`
   SELECT 
     uc.id AS user_card_id,
     uc.type AS custom_type,
-    uc.design_url,
+    COALESCE(uc.design_url, ct.image_url) AS final_card_image, -- image finale à imprimer
     uc.style_id,
     ct.label AS style_label,
-    ct.image_url AS style_image_url, -- si tu stockes les modèles par défaut ici
     uc.is_approved,
     c.card_number,
     c.expiry_date,
@@ -123,6 +125,9 @@ const printCardRes = await pool.query(`
   ORDER BY uc.created_at DESC
   LIMIT 1
 `, [id]);
+
+user.card_to_print = printCardRes.rows[0] || null;
+
 
 user.card_to_print = printCardRes.rows[0] || null;
 
