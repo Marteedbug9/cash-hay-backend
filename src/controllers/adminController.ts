@@ -242,20 +242,44 @@ export const getAllPhysicalCards = async (req: Request, res: Response) => {
 // ➤ Récupère toutes les cartes personnalisées d’un utilisateur
 export const getUserCustomCards = async (req: Request, res: Response) => {
   const { id } = req.params;
+
   try {
-    const result = await pool.query(
-      `SELECT style_id, type, price, design_url, created_at
-       FROM user_cards
-       WHERE user_id = $1
-       ORDER BY created_at DESC`,
-      [id]
-    );
+    const result = await pool.query(`
+      SELECT 
+        uc.id,
+        uc.type,
+        uc.style_id,
+        uc.price AS custom_price,
+        uc.design_url,
+        uc.created_at,
+        uc.is_current,
+        uc.is_approved,
+        uc.approved_by,
+        uc.approved_at,
+        ct.label AS style_label,
+        ct.price AS default_price,
+        c.status,
+        c.is_locked,
+        c.card_number,
+        c.expiry_date,
+        c.created_at AS requested_at,
+        c.type AS card_type,
+        c.account_type
+      FROM user_cards uc
+      LEFT JOIN card_types ct ON uc.style_id = ct.type
+      LEFT JOIN cards c ON uc.card_id = c.id
+      WHERE uc.user_id = $1
+        AND uc.design_url IS NOT NULL
+      ORDER BY uc.created_at DESC
+    `, [id]);
+
     res.status(200).json({ cards: result.rows });
   } catch (err) {
-    console.error('❌ Erreur récupération cartes perso:', err);
+    console.error('❌ Erreur récupération cartes personnalisées:', err);
     res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
+
 
 export const allowCardRequest = async (req: Request, res: Response) => {
   const userId = req.params.id;
