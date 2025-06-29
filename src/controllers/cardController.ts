@@ -76,8 +76,15 @@ export const cancelCard = async (req: Request, res: Response) => {
     ['cancelled', true, userId, 'active', 'pending']
   );
 
+  // 🔥 Ici tu ajoutes ton audit log
+  await pool.query(
+    'INSERT INTO audit_logs (user_id, action, details, created_at) VALUES ($1, $2, $3, NOW())',
+    [userId, 'cancel_card', 'Carte annulée par utilisateur']
+  );
+
   return res.json({ message: 'Carte annulée. Un agent validera l’annulation si nécessaire.' });
 };
+
 
 export const requestPhysicalCard = async (req: Request, res: Response) => {
   const client = await pool.connect();
@@ -94,13 +101,22 @@ export const requestPhysicalCard = async (req: Request, res: Response) => {
       return res.status(403).json({ error: "Vous n’êtes pas autorisé à faire une nouvelle demande de carte. Contactez un administrateur." });
     }
 
-    // Vérifie si déjà une carte physique en cours
+    // Vérifie si déjà une carte physique "classique" en cours ou active
     const { rows: existingPhysical } = await client.query(
       'SELECT * FROM cards WHERE user_id = $1 AND type = $2 AND status IN ($3, $4)',
       [userId, 'physical', 'pending', 'active']
     );
     if (existingPhysical.length > 0) {
       return res.status(400).json({ error: "Vous avez déjà une carte physique en cours ou active." });
+    }
+
+    // 🔒 Vérifie si déjà une carte personnalisée physique produite/assignée
+    const { rows: existingCustomPhysical } = await client.query(
+      `SELECT * FROM user_cards WHERE user_id = $1 AND type = $2 AND design_url IS NOT NULL AND card_id IS NOT NULL`,
+      [userId, 'physical']
+    );
+    if (existingCustomPhysical.length > 0) {
+      return res.status(400).json({ error: "Vous avez déjà une carte physique personnalisée produite ou en cours." });
     }
 
     // Insère la demande de carte physique
@@ -124,6 +140,7 @@ export const requestPhysicalCard = async (req: Request, res: Response) => {
     client.release();
   }
 };
+
 
 
 export const saveCustomCard = async (req: Request, res: Response) => {
