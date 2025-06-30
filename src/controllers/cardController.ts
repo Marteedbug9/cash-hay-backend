@@ -250,13 +250,9 @@ export const selectCardModel = async (req: Request, res: Response) => {
   const userId = req.user?.id;
   const { style_id, label, price, design_url, is_custom } = req.body;
 
-  if (!style_id || !label || !price) {
-    return res.status(400).json({ error: 'Champs manquants.' });
-  }
-
-  // Si carte custom, il faut le design_url
-  if (is_custom && !design_url) {
-    return res.status(400).json({ error: 'design_url requis pour une carte personnalisée.' });
+  // Champs obligatoires
+  if (!style_id || !label || !price || !design_url) {
+    return res.status(400).json({ error: 'Champs manquants (style_id, label, price, design_url requis).' });
   }
 
   try {
@@ -268,16 +264,17 @@ export const selectCardModel = async (req: Request, res: Response) => {
         style_id,
         is_custom ? 'custom' : 'classic',
         price,
-        is_custom ? design_url : null, // design_url seulement pour custom
+        design_url,   // toujours défini
         label,
       ]
     );
     res.json({ message: 'Carte enregistrée avec succès.' });
   } catch (err) {
-    console.error(err);
+    console.error('❌ Erreur enregistrement carte :', err);
     res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
+
 
 
 
