@@ -276,8 +276,6 @@ export const selectCardModel = async (req: Request, res: Response) => {
 };
 
 
-
-
 export const getLatestCustomCard = async (req: Request, res: Response) => {
   const userId = req.user?.id;
 
