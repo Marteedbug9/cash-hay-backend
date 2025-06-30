@@ -102,49 +102,53 @@ export const requestPhysicalCard = async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
     const userId = req.user?.id;
+    const { style_id, category = 'physique' } = req.body;
 
-    // Vérifie si l'utilisateur est autorisé
-    const { rows: userRows } = await client.query(
-      'SELECT card_request_allowed FROM users WHERE id = $1',
+    // 1. Récupérer le prix du modèle dans la base
+    const { rows: cardTypeRows } = await client.query(
+      'SELECT price FROM card_types WHERE type = $1',
+      [style_id]
+    );
+    if (!cardTypeRows.length) {
+      return res.status(404).json({ error: "Modèle de carte introuvable." });
+    }
+    const price = Number(cardTypeRows[0].price);
+
+    // 2. Récupérer la balance de l'utilisateur
+    const { rows: balanceRows } = await client.query(
+      'SELECT amount FROM balances WHERE user_id = $1',
       [userId]
     );
+    const balance = Number(balanceRows[0]?.amount || 0);
 
-    if (!userRows[0]?.card_request_allowed) {
-      return res.status(403).json({ error: "Vous n’êtes pas autorisé à faire une nouvelle demande de carte. Contactez un administrateur." });
+    // 3. Vérification du solde
+    if (balance < price) {
+      return res.status(400).json({ error: "Solde insuffisant pour demander ce modèle de carte." });
     }
 
-    // Vérifie si déjà une carte physique "classique" en cours ou active
-    const { rows: existingPhysical } = await client.query(
-      'SELECT * FROM cards WHERE user_id = $1 AND type = $2 AND status IN ($3, $4)',
-      [userId, 'physical', 'pending', 'active']
-    );
-    if (existingPhysical.length > 0) {
-      return res.status(400).json({ error: "Vous avez déjà une carte physique en cours ou active." });
-    }
+    // 4. Vérifications éventuelles supplémentaires…
 
-    // 🔒 Vérifie si déjà une carte personnalisée physique produite/assignée
-    const { rows: existingCustomPhysical } = await client.query(
-      `SELECT * FROM user_cards WHERE user_id = $1 AND category = $2 AND design_url IS NOT NULL AND card_id IS NOT NULL`,
-      [userId, 'physique']
-    );
-    if (existingCustomPhysical.length > 0) {
-      return res.status(400).json({ error: "Vous avez déjà une carte physique personnalisée produite ou en cours." });
-    }
-
-    // Insère la demande de carte physique (type = physical, category = physique)
+    // 5. Déduire la balance
     await client.query(
-      `INSERT INTO cards (user_id, type, status, is_locked, requested_at, category)
-       VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, $5)`,
-      [userId, 'physical', 'pending', false, 'physique']
+      'UPDATE balances SET amount = amount - $1 WHERE user_id = $2',
+      [price, userId]
     );
 
-    // Bloque les futures demandes jusqu'à validation
+    // 6. Enregistrer la transaction
     await client.query(
-      'UPDATE users SET card_request_allowed = false WHERE id = $1',
-      [userId]
+      `INSERT INTO transactions (user_id, type, amount, status, description, created_at)
+       VALUES ($1, $2, $3, $4, $5, NOW())`,
+      [userId, 'card_fee', price, 'completed', `Frais pour carte ${style_id}`]
     );
 
-    return res.json({ message: "Demande de carte physique enregistrée. Vous serez notifié lors de la validation." });
+    // 7. Enregistrer la demande de carte dans `user_cards` ou `cards`
+    await client.query(
+      `INSERT INTO user_cards (user_id, style_id, type, price, category, is_current)
+       VALUES ($1, $2, $3, $4, $5, true)`,
+      [userId, style_id, 'classic', price, category]
+    );
+
+    return res.json({ message: "Demande de carte enregistrée. Frais prélevés." });
   } catch (err) {
     console.error('Erreur demande carte physique:', err);
     return res.status(500).json({ error: 'Erreur serveur' });
@@ -152,7 +156,6 @@ export const requestPhysicalCard = async (req: Request, res: Response) => {
     client.release();
   }
 };
-
 
 
 
@@ -397,6 +400,4 @@ export const requestPhysicalCustomCard = async (req: Request, res: Response) => 
   }
 };
 
-
-// POST /api/cards/select-model
 
