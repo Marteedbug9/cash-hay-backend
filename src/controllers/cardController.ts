@@ -104,48 +104,63 @@ export const requestPhysicalCard = async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
     const userId = req.user?.id;
-    const { style_id, category = 'physique', type = 'classic', design_url = null } = req.body;
+    // Le frontend doit envoyer :
+    // style_id, price, design_url, label, card_name, is_custom (optionnel), type (classic/metal), etc.
+    const {
+      style_id,
+      price,
+      label,
+      card_name,
+      design_url,
+      is_custom = false,
+      category = 'physique',
+      type = 'classic',
+    } = req.body;
+
     const transferFee = 0.57;
     const ip_address = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '';
     const user_agent = req.headers['user-agent'] || '';
     const adminId = process.env.ADMIN_USER_ID || 'admin-id-123';
 
-    // 1. Vérifier le modèle de carte
-    const { rows: cardTypeRows } = await client.query(
-      'SELECT price, image_url FROM card_types WHERE type = $1',
-      [style_id]
-    );
-    if (!cardTypeRows.length) {
-      return res.status(404).json({ error: "Modèle de carte introuvable. Vérifiez le style_id envoyé." });
+    // 1️⃣ Vérifie le modèle (pour une carte standard, tu veux récupérer son prix dans card_types ; pour custom, le prix est envoyé)
+    let truePrice = Number(price);
+    if (!is_custom) {
+      // On check la table card_types si la carte n'est pas custom :
+      const { rows: cardTypeRows } = await client.query(
+        'SELECT price, image_url FROM card_types WHERE type = $1',
+        [style_id]
+      );
+      if (!cardTypeRows.length) {
+        return res.status(404).json({ error: "Modèle de carte introuvable. Vérifiez le style_id envoyé." });
+      }
+      truePrice = Number(cardTypeRows[0].price);
     }
-    const price = Number(cardTypeRows[0].price);
 
-    // 2. Récupérer la balance de l'utilisateur
+    // 2️⃣ Vérifie la balance
     const { rows: balanceRows } = await client.query(
       'SELECT amount FROM balances WHERE user_id = $1',
       [userId]
     );
     const balance = Number(balanceRows[0]?.amount || 0);
 
-    // 3. Vérification du solde
-    if (balance < price + transferFee) {
+    if (balance < truePrice + transferFee) {
       return res.status(400).json({ error: "Solde insuffisant pour demander ce modèle de carte (frais inclus)." });
     }
 
-    // 4. Déduire la balance utilisateur (prix carte + frais)
+    // 3️⃣ Déduire la balance utilisateur (prix + frais)
     await client.query(
       'UPDATE balances SET amount = amount - $1 WHERE user_id = $2',
-      [price + transferFee, userId]
+      [truePrice + transferFee, userId]
     );
 
-    // 5. Enregistrer la transaction de la carte
+    // 4️⃣ Transaction pour la carte
     await client.query(
       `INSERT INTO transactions (id, user_id, type, amount, status, description, created_at)
        VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
-      [uuidv4(), userId, 'card_fee', price, 'completed', `Frais pour carte ${style_id}`]
+      [uuidv4(), userId, 'card_fee', truePrice, 'completed', `Frais pour carte ${label || style_id}`]
     );
 
-    // 6. Frais de service crédités à l'admin
+    // 5️⃣ Frais de service pour admin
     await client.query(
       'UPDATE balances SET amount = amount + $1 WHERE user_id = $2',
       [transferFee, adminId]
@@ -156,29 +171,23 @@ export const requestPhysicalCard = async (req: Request, res: Response) => {
       [uuidv4(), userId, transferFee, adminId, ip_address, user_agent]
     );
 
-    // 7. Mettre à jour l'image du modèle dans card_types si vide et si design_url fourni (automatisation)
-    if (!cardTypeRows[0].image_url && design_url) {
-      await client.query(
-        `UPDATE card_types SET image_url = $1 WHERE type = $2`,
-        [design_url, style_id]
-      );
-    }
-
-    // 8. Enregistrer la demande de carte dans user_cards
+    // 6️⃣ Insère la demande de carte physique
     await client.query(
-      `INSERT INTO user_cards (user_id, style_id, type, price, category, is_current, design_url)
-       VALUES ($1, $2, $3, $4, $5, true, $6)`,
+      `INSERT INTO user_cards (user_id, style_id, type, price, category, is_current, design_url, label,status)
+       VALUES ($1, $2, $3, $4, $5, true, $6, $7,$8)`,
       [
         userId,
         style_id,
-        type,            // classic, metal, etc.
-        price,
-        category,        // physique, virtuel, business
-        design_url || null
+        type,
+        truePrice,
+        category,
+        design_url || null,
+        label || card_name || '', // label pour retrouver la carte plus facilement
+        'pending',
       ]
     );
 
-    // 9. Récupérer l'email de l'utilisateur
+    // 7️⃣ Envoi d’email confirmation utilisateur
     const { rows: userRows } = await client.query(
       `SELECT email, first_name FROM users WHERE id = $1 LIMIT 1`,
       [userId]
@@ -186,15 +195,14 @@ export const requestPhysicalCard = async (req: Request, res: Response) => {
     const email = userRows[0]?.email;
     const prenom = userRows[0]?.first_name || '';
 
-    // 10. Envoi d'email automatique
     if (email) {
       await sendEmail({
         to: email,
         subject: "Votre demande de carte physique Cash Hay a été reçue !",
         text: `Bonjour ${prenom || ''},
 
-Votre demande de carte physique Cash Hay a bien été reçue. 
-Nous allons la traiter dans les plus brefs délais. 
+Votre demande de carte physique Cash Hay a bien été reçue.
+Nous allons la traiter dans les plus brefs délais.
 Vous recevrez une notification dès qu’elle sera validée et prête à être imprimée.
 
 Merci de votre confiance.
@@ -202,7 +210,10 @@ L’équipe Cash Hay`
       });
     }
 
-    return res.json({ message: "Demande de carte enregistrée. Frais prélevés et commission admin prise en compte. Un email de confirmation a été envoyé." });
+    return res.json({
+      message: "Demande de carte enregistrée. Frais prélevés et commission admin prise en compte. Un email de confirmation a été envoyé."
+    });
+
   } catch (err: any) {
     if (
       err.code === '23503' &&
@@ -217,9 +228,6 @@ L’équipe Cash Hay`
     client.release();
   }
 };
-
-
-
 
 
 
@@ -259,11 +267,12 @@ export const saveCustomCard = async (req: Request, res: Response) => {
 
     // 3️⃣ Insère dans user_cards (conformément à la contrainte FK)
     await pool.query(
-      `INSERT INTO user_cards 
-        (user_id, style_id, type, category, price, design_url, label, is_current) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, true)`,
-      [userId, style_id, type, 'physique', price, design_url, label]
-    );
+  `INSERT INTO user_cards 
+    (user_id, style_id, type, category, price, design_url, label, is_current, status) 
+   VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8)`,
+  [userId, style_id, type, 'physique', price, design_url, label, 'pending']
+);
+
 
     res.status(201).json({ message: 'Carte personnalisée enregistrée avec succès.' });
   } catch (err: any) {
@@ -369,12 +378,32 @@ export const selectCardModel = async (req: Request, res: Response) => {
   const userId = req.user?.id;
   const { style_id, label, price, design_url, is_custom } = req.body;
 
-  // Champs obligatoires
   if (!style_id || !label || !price || !design_url) {
     return res.status(400).json({ error: 'Champs manquants (style_id, label, price, design_url requis).' });
   }
 
   try {
+    // 1️⃣ Vérifie si le modèle existe dans card_types
+    const { rows } = await pool.query(
+      'SELECT * FROM card_types WHERE type = $1',
+      [style_id]
+    );
+
+    // 2️⃣ Si pas trouvé → insère dans card_types
+    if (rows.length === 0) {
+      await pool.query(
+        `INSERT INTO card_types (type, label, price, image_url)
+         VALUES ($1, $2, $3, $4)`,
+        [
+          style_id,
+          label,
+          price,
+          design_url // L’image du modèle pour ce style_id
+        ]
+      );
+    }
+
+    // 3️⃣ Insère dans user_cards
     await pool.query(
       `INSERT INTO user_cards 
         (user_id, style_id, type, price, design_url, label, category, is_current)
@@ -382,13 +411,14 @@ export const selectCardModel = async (req: Request, res: Response) => {
       [
         userId,
         style_id,
-        is_custom ? 'custom' : 'classic',   // ou metal si besoin, selon frontend
+        is_custom ? 'custom' : 'classic', // ou metal, etc.
         price,
-        design_url,                        // toujours défini
+        design_url,
         label,
-        'physique',                        // <-- Ajoute la catégorie physique
+        'physique',
       ]
     );
+
     res.json({ message: 'Carte enregistrée avec succès.' });
   } catch (err) {
     console.error('❌ Erreur enregistrement carte :', err);
@@ -398,14 +428,17 @@ export const selectCardModel = async (req: Request, res: Response) => {
 
 
 
+
 export const getLatestCustomCard = async (req: Request, res: Response) => {
   const userId = req.user?.id;
 
   try {
     const result = await pool.query(
-      `SELECT * FROM user_cards 
-       WHERE user_id = $1 
-       ORDER BY created_at DESC 
+      `SELECT *
+       FROM user_cards
+       WHERE user_id = $1
+         AND design_url IS NOT NULL
+       ORDER BY created_at DESC
        LIMIT 1`,
       [userId]
     );
@@ -420,6 +453,7 @@ export const getLatestCustomCard = async (req: Request, res: Response) => {
     res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
+
 
 
 export const assignPhysicalCard = async (req: Request, res: Response) => {

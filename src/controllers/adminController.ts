@@ -257,7 +257,7 @@ export const getAllPhysicalCards = async (req: Request, res: Response) => {
       `SELECT uc.*, u.first_name, u.last_name, u.email
        FROM user_cards uc
        JOIN users u ON uc.user_id = u.id
-       WHERE uc.type = 'physique'
+       WHERE uc.category = 'physique'
        ORDER BY uc.created_at DESC`
     );
     res.status(200).json({ cards: result.rows });
