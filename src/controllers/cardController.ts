@@ -1,5 +1,7 @@
 import { Request, Response } from 'express';
 import pool from '../config/db';
+import { sendPushNotification, sendEmail, sendSMS } from '../utils/notificationUtils';
+import { v4 as uuidv4 } from 'uuid';
 
 
 // 🟢 Demande de carte gratuite, paiement après 48h
@@ -102,8 +104,11 @@ export const requestPhysicalCard = async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
     const userId = req.user?.id;
-    // Le frontend doit envoyer style_id, type et optionnellement design_url si personnalisée
     const { style_id, category = 'physique', type = 'classic', design_url = null } = req.body;
+    const transferFee = 0.57;
+    const ip_address = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '';
+    const user_agent = req.headers['user-agent'] || '';
+    const adminId = process.env.ADMIN_USER_ID || 'admin-id-123';
 
     // 1. Vérifier le modèle de carte
     const { rows: cardTypeRows } = await client.query(
@@ -123,38 +128,81 @@ export const requestPhysicalCard = async (req: Request, res: Response) => {
     const balance = Number(balanceRows[0]?.amount || 0);
 
     // 3. Vérification du solde
-    if (balance < price) {
-      return res.status(400).json({ error: "Solde insuffisant pour demander ce modèle de carte." });
+    if (balance < price + transferFee) {
+      return res.status(400).json({ error: "Solde insuffisant pour demander ce modèle de carte (frais inclus)." });
     }
 
-    // 4. Déduire la balance
+    // 4. Déduire la balance utilisateur (prix carte + frais)
     await client.query(
       'UPDATE balances SET amount = amount - $1 WHERE user_id = $2',
-      [price, userId]
+      [price + transferFee, userId]
     );
 
-    // 5. Enregistrer la transaction
+    // 5. Enregistrer la transaction de la carte
     await client.query(
-      `INSERT INTO transactions (user_id, type, amount, status, description, created_at)
-       VALUES ($1, $2, $3, $4, $5, NOW())`,
-      [userId, 'card_fee', price, 'completed', `Frais pour carte ${style_id}`]
+      `INSERT INTO transactions (id, user_id, type, amount, status, description, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
+      [uuidv4(), userId, 'card_fee', price, 'completed', `Frais pour carte ${style_id}`]
     );
 
-    // 6. Enregistrer la demande de carte dans user_cards
+    // 6. Frais de service crédités à l'admin
+    await client.query(
+      'UPDATE balances SET amount = amount + $1 WHERE user_id = $2',
+      [transferFee, adminId]
+    );
+    await client.query(
+      `INSERT INTO transactions (id, user_id, type, amount, currency, recipient_id, source, status, description, ip_address, user_agent, created_at)
+       VALUES ($1, $2, 'fee', $3, 'HTG', $4, 'fee', 'completed', 'Frais de transfert carte', $5, $6, NOW())`,
+      [uuidv4(), userId, transferFee, adminId, ip_address, user_agent]
+    );
+
+    // 7. Mettre à jour l'image du modèle dans card_types si vide et si design_url fourni (automatisation)
+    if (!cardTypeRows[0].image_url && design_url) {
+      await client.query(
+        `UPDATE card_types SET image_url = $1 WHERE type = $2`,
+        [design_url, style_id]
+      );
+    }
+
+    // 8. Enregistrer la demande de carte dans user_cards
     await client.query(
       `INSERT INTO user_cards (user_id, style_id, type, price, category, is_current, design_url)
        VALUES ($1, $2, $3, $4, $5, true, $6)`,
       [
         userId,
         style_id,
-        type,            // classic, metal, etc. (le frontend doit envoyer)
+        type,            // classic, metal, etc.
         price,
         category,        // physique, virtuel, business
         design_url || null
       ]
     );
 
-    return res.json({ message: "Demande de carte enregistrée. Frais prélevés." });
+    // 9. Récupérer l'email de l'utilisateur
+    const { rows: userRows } = await client.query(
+      `SELECT email, first_name FROM users WHERE id = $1 LIMIT 1`,
+      [userId]
+    );
+    const email = userRows[0]?.email;
+    const prenom = userRows[0]?.first_name || '';
+
+    // 10. Envoi d'email automatique
+    if (email) {
+      await sendEmail({
+        to: email,
+        subject: "Votre demande de carte physique Cash Hay a été reçue !",
+        text: `Bonjour ${prenom || ''},
+
+Votre demande de carte physique Cash Hay a bien été reçue. 
+Nous allons la traiter dans les plus brefs délais. 
+Vous recevrez une notification dès qu’elle sera validée et prête à être imprimée.
+
+Merci de votre confiance.
+L’équipe Cash Hay`
+      });
+    }
+
+    return res.json({ message: "Demande de carte enregistrée. Frais prélevés et commission admin prise en compte. Un email de confirmation a été envoyé." });
   } catch (err: any) {
     if (
       err.code === '23503' &&
@@ -174,6 +222,7 @@ export const requestPhysicalCard = async (req: Request, res: Response) => {
 
 
 
+
 export const saveCustomCard = async (req: Request, res: Response) => {
   const userId = req.user?.id;
   const { style_id, type, price, design_url, label, card_name } = req.body;
@@ -188,7 +237,7 @@ export const saveCustomCard = async (req: Request, res: Response) => {
       [style_id]
     );
 
-    // 2️⃣ Si le style_id n’existe pas, l’ajoute
+    // 2️⃣ Si le style_id n’existe pas, l’ajoute (on garde le design_url comme image du modèle custom)
     if (rows.length === 0) {
       await pool.query(
         `INSERT INTO card_types (type, label, price, image_url)
@@ -197,8 +246,14 @@ export const saveCustomCard = async (req: Request, res: Response) => {
           style_id,
           label,
           price,
-          design_url // pour les cartes custom, l'image est le design perso !
+          design_url // image du modèle = design personnalisé
         ]
+      );
+    } else if (!rows[0].image_url && design_url) {
+      // Si le modèle existe mais sans image, on complète automatiquement
+      await pool.query(
+        `UPDATE card_types SET image_url = $1 WHERE type = $2`,
+        [design_url, style_id]
       );
     }
 
@@ -212,10 +267,19 @@ export const saveCustomCard = async (req: Request, res: Response) => {
 
     res.status(201).json({ message: 'Carte personnalisée enregistrée avec succès.' });
   } catch (err: any) {
+    // Gestion de l’erreur FK si bug côté style_id
+    if (
+      err.code === '23503' &&
+      err.detail &&
+      err.detail.includes('is not present in table "card_types"')
+    ) {
+      return res.status(400).json({ error: "Erreur FK: Le modèle de carte n'existe pas dans card_types." });
+    }
     console.error('❌ Erreur insertion carte personnalisée:', err);
     res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
+
 
 
 
