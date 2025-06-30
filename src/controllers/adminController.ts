@@ -41,7 +41,7 @@ export const getUserDetail = async (req: Request, res: Response) => {
   const { id } = req.params;
 
   try {
-    // 1. Info principale de l'utilisateur
+    // 1. Récupération info utilisateur
     const userRes = await pool.query(`
       SELECT 
         u.id, u.username, u.email, u.phone, u.first_name, u.last_name, u.address,
@@ -62,19 +62,18 @@ export const getUserDetail = async (req: Request, res: Response) => {
 
     const user = userRes.rows[0];
 
-    // 2. Contacts liés (members.contact)
+    // 2. Contacts liés
     const contactsRes = await pool.query(
-      `SELECT contact FROM members WHERE user_id = $1`,
-      [id]
+      `SELECT contact FROM members WHERE user_id = $1`, [id]
     );
     user.contacts = contactsRes.rows.map(row => row.contact);
 
-    // 3. Cartes (user_cards + card_types + cards)
+    // 3. Liste de toutes les cartes (toujours renvoyer l'image/design)
     const cardsRes = await pool.query(`
       SELECT 
         uc.id,
         uc.type,
-        uc.category, -- <== AJOUT ici
+        uc.category,
         uc.style_id,
         uc.price AS custom_price,
         uc.design_url,
@@ -88,10 +87,9 @@ export const getUserDetail = async (req: Request, res: Response) => {
         ct.label AS style_label,
         ct.price AS default_price,
         ct.image_url AS style_image_url,
+        -- N'expose PAS card_number, expiry_date ni cvv ici
         c.status,
         c.is_locked,
-        c.card_number,
-        c.expiry_date,
         c.created_at AS requested_at,
         c.type AS card_type,
         c.account_type
@@ -101,40 +99,31 @@ export const getUserDetail = async (req: Request, res: Response) => {
       WHERE uc.user_id = $1
       ORDER BY uc.created_at DESC
     `, [id]);
+    user.cards = cardsRes.rows;
 
-    // 2.5 Dernière carte physique à imprimer (priorité carte personnalisée validée)
+    // 3bis. Carte physique à imprimer (toujours envoyer le design)
     const printCardRes = await pool.query(`
       SELECT 
         uc.id AS user_card_id,
         uc.type AS custom_type,
-        uc.category, -- <== AJOUT ici
-        COALESCE(uc.design_url, ct.image_url) AS final_card_image,
+        uc.category,
         uc.style_id,
+        COALESCE(uc.design_url, ct.image_url) AS final_card_image,
         ct.label AS style_label,
-        uc.is_approved,
-        c.card_number,
-        c.expiry_date,
-        c.status,
-        c.type AS card_type,
-        c.account_type
+        uc.is_approved
       FROM user_cards uc
       LEFT JOIN card_types ct ON uc.style_id = ct.type
-      LEFT JOIN cards c ON uc.card_id = c.id
       WHERE uc.user_id = $1
         AND uc.category = 'physique'
         AND uc.is_approved = true
       ORDER BY uc.created_at DESC
       LIMIT 1
     `, [id]);
-
     user.card_to_print = printCardRes.rows[0] || null;
-
-    user.cards = cardsRes.rows;
 
     // 4. Audit logs
     const auditRes = await pool.query(
-      `SELECT * FROM audit_logs WHERE user_id = $1 ORDER BY created_at DESC LIMIT 30`,
-      [id]
+      `SELECT * FROM audit_logs WHERE user_id = $1 ORDER BY created_at DESC LIMIT 30`, [id]
     );
     user.audit_logs = auditRes.rows;
 
@@ -145,6 +134,7 @@ export const getUserDetail = async (req: Request, res: Response) => {
     res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
+
 
 
 
