@@ -217,11 +217,16 @@ router.get('/users/:id/cards', verifyToken, verifyAdmin, async (req, res) => {
       WHERE uc.user_id = $1
       ORDER BY uc.created_at DESC
     `, [id]);
+    // Ajoute ce log pour voir ce que la requête retourne vraiment
+    console.log('🟢 Cartes SQL pour user', id, ':', cardsRes.rows);
+
     res.json(cardsRes.rows);
   } catch (err) {
+    console.error('❌ Erreur SQL cartes:', err); // Ajoute un log d’erreur plus visible
     res.status(500).json({ error: 'Erreur chargement cartes.' });
   }
 });
+
 
 
 // ➤ Voir les audits d'un user
