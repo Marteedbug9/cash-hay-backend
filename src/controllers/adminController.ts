@@ -41,7 +41,7 @@ export const getUserDetail = async (req: Request, res: Response) => {
   const { id } = req.params;
 
   try {
-    // 1. Récupération info utilisateur
+    // 1. Infos utilisateur
     const userRes = await pool.query(`
       SELECT 
         u.id, u.username, u.email, u.phone, u.first_name, u.last_name, u.address,
@@ -59,16 +59,15 @@ export const getUserDetail = async (req: Request, res: Response) => {
     if (!userRes.rows.length) {
       return res.status(404).json({ error: 'Utilisateur non trouvé.' });
     }
-
     const user = userRes.rows[0];
 
-    // 2. Contacts liés
+    // 2. Contacts liés (membres)
     const contactsRes = await pool.query(
       `SELECT contact FROM members WHERE user_id = $1`, [id]
     );
     user.contacts = contactsRes.rows.map(row => row.contact);
 
-    // 3. Liste de toutes les cartes (toujours renvoyer l'image/design)
+    // 3. Liste complète des cartes (toujours inclure l’image/design, jamais les données sensibles !)
     const cardsRes = await pool.query(`
       SELECT 
         uc.id,
@@ -87,7 +86,6 @@ export const getUserDetail = async (req: Request, res: Response) => {
         ct.label AS style_label,
         ct.price AS default_price,
         ct.image_url AS style_image_url,
-        -- N'expose PAS card_number, expiry_date ni cvv ici
         c.status,
         c.is_locked,
         c.created_at AS requested_at,
@@ -101,7 +99,7 @@ export const getUserDetail = async (req: Request, res: Response) => {
     `, [id]);
     user.cards = cardsRes.rows;
 
-    // 3bis. Carte physique à imprimer (toujours envoyer le design)
+    // 3bis. Dernière carte physique à imprimer (toujours renvoyer le design)
     const printCardRes = await pool.query(`
       SELECT 
         uc.id AS user_card_id,
@@ -123,17 +121,18 @@ export const getUserDetail = async (req: Request, res: Response) => {
 
     // 4. Audit logs
     const auditRes = await pool.query(
-      `SELECT * FROM audit_logs WHERE user_id = $1 ORDER BY created_at DESC LIMIT 30`, [id]
+      `SELECT action, created_at, details FROM audit_logs WHERE user_id = $1 ORDER BY created_at DESC LIMIT 30`, [id]
     );
     user.audit_logs = auditRes.rows;
 
-    // ✅ Résultat final
+    // ✅ Envoi final
     res.json(user);
   } catch (err) {
     console.error('❌ Erreur getUserDetail:', err);
     res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
+
 
 
 
