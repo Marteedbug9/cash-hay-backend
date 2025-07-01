@@ -69,35 +69,36 @@ export const getUserDetail = async (req: Request, res: Response) => {
 
     // 3. Liste complète des cartes (toujours inclure l’image/design, jamais les données sensibles !)
     const cardsRes = await pool.query(`
-      SELECT 
-        uc.id,
-        uc.type,
-        uc.category,
-        uc.style_id,
-        uc.price AS custom_price,
-        uc.design_url,
-        COALESCE(uc.design_url, ct.image_url) AS final_card_image,
-        uc.is_printed,
-        uc.created_at,
-        uc.is_current,
-        uc.is_approved,
-        uc.approved_by,
-        uc.approved_at,
-        ct.label AS style_label,
-        ct.price AS default_price,
-        ct.image_url AS style_image_url,
-        c.status,
-        c.is_locked,
-        c.created_at AS requested_at,
-        c.type AS card_type,
-        c.account_type
-      FROM user_cards uc
-      LEFT JOIN card_types ct ON uc.style_id = ct.type
-      LEFT JOIN cards c ON uc.card_id = c.id
-      WHERE uc.user_id = $1
-      ORDER BY uc.created_at DESC
-    `, [id]);
-    user.cards = cardsRes.rows;
+  SELECT 
+    uc.id,
+    uc.type,
+    uc.category,
+    uc.style_id,
+    uc.price AS custom_price,
+    uc.design_url,
+    COALESCE(uc.design_url, ct.image_url) AS final_card_image,
+    uc.is_printed,
+    uc.created_at,
+    uc.is_current,
+    uc.is_approved,
+    uc.approved_by,
+    uc.approved_at,
+    ct.label AS style_label,
+    ct.price AS default_price,
+    ct.image_url AS style_image_url,
+    c.status,
+    c.is_locked,
+    c.created_at AS requested_at,
+    c.type AS card_type,
+    c.account_type
+  FROM user_cards uc
+  LEFT JOIN card_types ct ON uc.style_id = ct.type
+  LEFT JOIN cards c ON uc.card_id = c.id
+  WHERE uc.user_id = $1
+  ORDER BY uc.created_at DESC
+`, [id]);
+user.cards = cardsRes.rows;
+
 
     // 3bis. Dernière carte physique à imprimer (toujours renvoyer le design)
     const printCardRes = await pool.query(`
