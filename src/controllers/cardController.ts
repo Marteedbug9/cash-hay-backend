@@ -515,8 +515,8 @@ export const requestPhysicalCustomCard = async (req: Request, res: Response) => 
     // Stocke la demande personnalisée pour admin (type = classic ou metal selon ton frontend, ici custom pour différencier)
     await pool.query(
       `INSERT INTO user_cards 
-        (user_id, design_url, type, style_id, price, status, category, is_current, label) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8)`,
+        (user_id, design_url, type, style_id, price, status, category, is_current, label,status) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8,$9)`,
       [
         userId,
         design_url,
