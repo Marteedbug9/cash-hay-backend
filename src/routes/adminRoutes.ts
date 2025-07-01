@@ -185,18 +185,44 @@ router.patch('/users/:id/identity/reactivate', verifyToken, verifyAdmin, async (
 });
 
 // ➤ Voir toutes les cartes d'un user
-router.get('/users/:id/cards', verifyToken, verifyAdmin, async (req, res) => {
+router.get('/users/:id/cards', verifyToken, verifyAdmin, async (req, res) => { 
   const { id } = req.params;
   try {
-    const cards = await pool.query(
-      `SELECT id, card_number, expiry_date, cvv, type, account_type, status, is_locked, requested_at, price
-       FROM cards WHERE user_id = $1 ORDER BY requested_at DESC`, [id]
-    );
-    res.json(cards.rows);
+    const cardsRes = await pool.query(`
+      SELECT 
+        uc.id,
+        uc.type,
+        uc.category,
+        uc.style_id,
+        uc.price AS custom_price,
+        uc.design_url,
+        COALESCE(uc.design_url, ct.image_url) AS final_card_image,
+        uc.is_printed,
+        uc.created_at,
+        uc.is_current,
+        uc.is_approved,
+        uc.approved_by,
+        uc.approved_at,
+        ct.label AS style_label,
+        ct.price AS default_price,
+        ct.image_url AS style_image_url,
+        c.status,
+        c.is_locked,
+        c.created_at AS requested_at,
+        c.type AS card_type,
+        c.account_type
+      FROM user_cards uc
+      LEFT JOIN card_types ct ON uc.style_id = ct.type
+      LEFT JOIN cards c ON uc.card_id = c.id
+      WHERE uc.user_id = $1
+      ORDER BY uc.created_at DESC
+    `, [id]);
+    res.json(cardsRes.rows);
   } catch (err) {
     res.status(500).json({ error: 'Erreur chargement cartes.' });
   }
 });
+
 
 // ➤ Voir les audits d'un user
 router.get('/users/:id/audit', verifyToken, verifyAdmin, async (req, res) => {
