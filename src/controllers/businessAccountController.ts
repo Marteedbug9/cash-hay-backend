@@ -10,29 +10,50 @@ const generateToken = () => uuidv4();
 
 export const createBusinessAccountRequest = async (req: Request, res: Response) => {
   try {
-    // 1. Auth: récupère l'ID user (par exemple req.user.id si tu utilises JWT auth middleware)
     if (!req.user || !req.user.id) {
-  return res.status(401).json({ error: "Utilisateur non authentifié." });
-}
+      return res.status(401).json({ error: "Utilisateur non authentifié." });
+    }
     const user_id = req.user.id;
     const {
-      company_name, business_type, tax_id, contact_email, contact_phone, reason, members_count, members_emails
+      company_name,
+      legal_status,
+      business_type,
+      tax_id,
+      contact_email,
+      contact_phone,
+      reason,
+      members_count,
+      members_emails,
     } = req.body;
     const files = req.files as Express.Multer.File[];
 
-    // 2. Insère la demande principale
+    // 1. Insère la demande principale
     const requestInsert = await db.query(
       `INSERT INTO business_account_requests
-       (user_id, company_name, business_type, tax_id, contact_email, contact_phone, reason, members_count)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        (user_id, company_name, legal_status, business_type, tax_id, contact_email, contact_phone, reason, members_count)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING id`,
-      [user_id, company_name, business_type, tax_id, contact_email, contact_phone, reason, members_count]
+      [
+        user_id,
+        company_name,
+        legal_status,
+        business_type,
+        tax_id,
+        contact_email,
+        contact_phone,
+        reason,
+        members_count,
+      ]
     );
     const requestId = requestInsert.rows[0].id;
 
-    // 3. Insère les membres + génère token + envoie lien
-    const emails: string[] = Array.isArray(members_emails) ? members_emails : [members_emails];
-
+    // 2. Membres
+    let emails: string[] = [];
+    if (Array.isArray(members_emails)) {
+      emails = members_emails.filter(e => e && typeof e === 'string' && e.trim());
+    } else if (typeof members_emails === 'string' && members_emails.trim()) {
+      emails = [members_emails.trim()];
+    }
     for (const email of emails) {
       const token = generateToken();
       await db.query(
@@ -40,19 +61,17 @@ export const createBusinessAccountRequest = async (req: Request, res: Response) 
          VALUES ($1, $2, $3)`,
         [requestId, email, token]
       );
-
-      // 4. ENVOI EMAIL de vérification (remplace console.log par ton service email réel)
       const verificationLink = `https://cash-hay.com/verify-business-member/${token}`;
       console.log(`Email envoyé à ${email}: Cliquez ici pour vérification d'identité : ${verificationLink}`);
       // TODO: sendMail(email, subject, message);
     }
 
-    // 5. Insère les documents (optionnel)
+    // 3. Documents Cloudinary (file.path = URL Cloudinary)
     for (const file of files || []) {
       await db.query(
         `INSERT INTO business_account_documents (request_id, filename, file_url)
          VALUES ($1, $2, $3)`,
-        [requestId, file.originalname, file.path] // Ou URL Cloudinary/S3 si tu les uploades
+        [requestId, file.originalname, file.path]
       );
     }
 
@@ -62,6 +81,7 @@ export const createBusinessAccountRequest = async (req: Request, res: Response) 
     res.status(500).json({ error: "Erreur serveur" });
   }
 };
+
 
 
 export const verifyBusinessMemberIdentity = async (req: Request, res: Response) => {
