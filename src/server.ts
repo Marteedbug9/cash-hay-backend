@@ -14,7 +14,8 @@ import adminRoutes from './routes/adminRoutes';
 import memberRoutes from './routes/memberRoutes';
 import notificationsRoutes from './routes/notificationsRoutes';
 import requestRoutes from './routes/requestRoutes';
-
+import businessAccountRoutes from './routes/businessAccountRoutes';
+import businessAdminRoutes from './routes/businessAdminRoutes';
 import pool from './config/db'; // Connexion test DB
 
 const app = express();
@@ -34,6 +35,9 @@ app.use('/api/members', memberRoutes);
 
 app.use('/api/notifications', notificationsRoutes);
 app.use('/api/requests', requestRoutes);
+
+app.use('/api', businessAccountRoutes);
+app.use('/api/business-admin', businessAdminRoutes);
 
 // ✅ Vérifie DB et démarre serveur
 pool.query('SELECT NOW()')
