@@ -241,19 +241,28 @@ export const unblockUserOTP = async (req: Request, res: Response) => {
   }
 };
 
+// ➤ Modifiez getAllPhysicalCards pour mieux gérer les erreurs :
 export const getAllPhysicalCards = async (req: Request, res: Response) => {
   try {
     const result = await pool.query(
-      `SELECT uc.*, u.first_name, u.last_name, u.email
+      `SELECT 
+        uc.id, uc.type, uc.category, uc.design_url, uc.is_printed,
+        uc.created_at, uc.is_approved, uc.approved_at,
+        u.id as user_id, u.first_name, u.last_name, u.email,
+        ct.label as card_style, ct.image_url as style_image
        FROM user_cards uc
        JOIN users u ON uc.user_id = u.id
+       LEFT JOIN card_types ct ON uc.style_id = ct.type
        WHERE uc.category = 'physique'
        ORDER BY uc.created_at DESC`
     );
-    res.status(200).json({ cards: result.rows });
+    res.status(200).json(result.rows);
   } catch (err) {
-    console.error('❌ Erreur récupération cartes physiques:', err);
-    res.status(500).json({ error: 'Erreur serveur.' });
+    console.error('Erreur récupération cartes physiques:', err);
+    res.status(500).json({ 
+      error: 'Erreur serveur',
+      details: err instanceof Error ? err.message : undefined
+    });
   }
 };
 

@@ -23,9 +23,7 @@ function generateExpiryDate(): string {
   return `${month}/${year.toString().slice(-2)}`; // '06/29'
 }
 
-function generateCVV(): string {
-  return Math.floor(100 + Math.random() * 900).toString();
-}
+
 
 
 // ➤ Enregistrement
@@ -93,7 +91,7 @@ export const register = async (req: Request, res: Response) => {
    
 await client.query(
   `INSERT INTO cards (
-      id, user_id, card_number, expiry_date, cvv, type, account_type, status, created_at
+      id, user_id, card_number, expiry_date, type, account_type, status, created_at
     ) VALUES (
       $1, $2, $3, $4, $5, $6, $7, $8, NOW()
     )`,
@@ -102,7 +100,7 @@ await client.query(
     userId,
     generateCardNumber(),      // À toi d’implémenter une fonction de génération !
     generateExpiryDate(),      // Ex: '08/29'
-    generateCVV(),             // Ex: '934'
+                // Ex: '934'
     'virtual',
     'checking',
     'pending'                  // ou 'active' si validé direct

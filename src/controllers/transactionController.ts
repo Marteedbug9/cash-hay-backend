@@ -5,6 +5,8 @@ import { v4 as uuidv4 } from 'uuid';
 import PDFDocument from 'pdfkit';
 import { sendPushNotification, sendEmail, sendSMS } from '../utils/notificationUtils';
 import { addNotification } from './notificationsController'; 
+// En haut du fichier
+import stripe from '../config/stripe';
 
 
 
@@ -781,5 +783,137 @@ export const getMonthlyStatement = async (req: Request, res: Response) => {
       // Optionnel: ferme le stream et laisse le client gérer l’erreur PDF côté front
       res.end();
     }
+  }
+};
+
+export const cardPayment = async (
+  req: Request & { user?: { id: string } },
+  res: Response
+) => {
+  if (!req.user?.id) {
+    return res.status(401).json({ error: 'Authentification requise' });
+  }
+
+  const userId = req.user.id;
+  const { amount, merchant_id, card_id } = req.body;
+  const ip_address =
+    (req.headers['x-forwarded-for'] as string) ||
+    req.socket.remoteAddress ||
+    '';
+  const user_agent = req.headers['user-agent'] || '';
+
+  // Validation des entrées
+  if (!amount || isNaN(amount) || amount <= 0) {
+    return res.status(400).json({ error: 'Montant invalide' });
+  }
+  if (!merchant_id || !card_id) {
+    return res.status(400).json({ error: 'Marchand et carte requis' });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // 1. Vérification de la carte
+    const cardCheck = await client.query<{
+      id: string;
+      stripe_card_id: string;
+      is_locked: boolean;
+      status: string;
+    }>(
+      `SELECT id, stripe_card_id, is_locked, status 
+       FROM cards 
+       WHERE user_id = $1 AND id = $2 FOR UPDATE`,
+      [userId, card_id]
+    );
+
+    if (cardCheck.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Carte non trouvée' });
+    }
+
+    const card = cardCheck.rows[0];
+    if (card.is_locked || card.status !== 'active') {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: 'Carte non disponible pour paiement' });
+    }
+
+    // 2. Vérification du solde utilisateur
+    const balanceRes = await client.query<{ amount: number }>(
+      `SELECT amount FROM balances WHERE user_id = $1 FOR UPDATE`,
+      [userId]
+    );
+    if (
+      balanceRes.rows.length === 0 ||
+      balanceRes.rows[0].amount < amount
+    ) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Solde insuffisant' });
+    }
+
+    // 3. Génère un ID d'autorisation fictif, le vrai ID viendra du webhook Stripe
+    const authId = `auth_${crypto.randomUUID()}`;
+
+    // 4. Enregistre la transaction locale (statut "pending" en attendant le webhook Stripe)
+    const txId = crypto.randomUUID();
+    await client.query(
+      `INSERT INTO transactions (
+        id, user_id, type, amount, currency, status, source, 
+        ip_address, user_agent, business_id, card_id, stripe_authorization_id
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+      [
+        txId,
+        userId,
+        'card_payment',
+        amount,
+        'USD',
+        'pending', // En attente d'autorisation Stripe
+        'stripe_issuing',
+        ip_address,
+        user_agent,
+        merchant_id,
+        card_id,
+        authId // Fictif pour l’instant, remplacé plus tard par le vrai ID Stripe
+      ]
+    );
+
+    // 5. Déduit le solde localement
+    await client.query(
+      `UPDATE balances SET amount = amount - $1 
+       WHERE user_id = $2`,
+      [amount, userId]
+    );
+
+    // 6. Audit log
+    await client.query(
+      `INSERT INTO audit_logs 
+       (user_id, action, ip_address, user_agent, details)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [
+        userId,
+        'card_payment',
+        ip_address,
+        user_agent,
+        `Paiement de ${amount} USD chez marchand ${merchant_id}`,
+      ]
+    );
+
+    await client.query('COMMIT');
+    res.status(200).json({
+      success: true,
+      transaction_id: txId,
+      stripe_authorization_id: authId, // Fictif pour l’instant
+      amount: Number(amount),
+      currency: 'USD'
+    });
+  } catch (err: any) {
+    await client.query('ROLLBACK');
+    console.error('Erreur paiement:', err?.message || err);
+    res.status(500).json({
+      error: 'Erreur lors du traitement du paiement',
+      details: err?.message || 'Veuillez réessayer plus tard',
+    });
+  } finally {
+    client.release();
   }
 };

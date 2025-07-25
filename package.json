@@ -25,6 +25,7 @@
     "react-native-dotenv": "^3.4.11",
     "request-ip": "^3.3.0",
     "streamifier": "^0.1.1",
+    "stripe": "^18.3.0",
     "twilio": "^5.7.0",
     "uuid": "^11.1.0"
   },
@@ -37,6 +38,7 @@
     "@types/nodemailer": "^6.4.17",
     "@types/pg": "^8.15.4",
     "@types/request-ip": "^0.0.41",
+    "@types/stripe": "^8.0.417",
     "@types/twilio": "^3.19.3",
     "@types/uuid": "^10.0.0",
     "ts-node": "^10.9.2",
