@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import pool from '../config/db';
+import stripe from '../config/stripe';
 
 // ➤ Liste tous les utilisateurs (avec info membre, profil, carte, etc.)
 export const getAllUsers = async (req: Request, res: Response) => {
@@ -422,3 +423,41 @@ export const markCardAsPrinted = async (req: Request, res: Response) => {
   }
 };
 
+
+export const adminCancelCard = async (req: Request, res: Response) => {
+  const adminId = req.user?.id;
+  const { cardId } = req.body; // ou req.params selon routing
+
+  // 1. Vérifier le statut "pending_cancel"
+  const { rows } = await pool.query(
+    `SELECT * FROM cards WHERE id = $1 AND status = 'pending_cancel'`,
+    [cardId]
+  );
+  if (rows.length === 0) {
+    return res.status(404).json({ error: "Carte non trouvée ou pas en attente d'annulation." });
+  }
+  const card = rows[0];
+
+  // 2. Annule sur Stripe (status="canceled" = destruction définitive)
+  try {
+    await stripe.issuing.cards.update(card.stripe_card_id, { status: "canceled" });
+  } catch (err) {
+    console.error('Erreur Stripe (cancel card):', err);
+    return res.status(500).json({ error: "Erreur Stripe lors de l’annulation de la carte." });
+  }
+
+  // 3. Mets à jour la base locale
+  await pool.query(
+    `UPDATE cards SET status = 'cancelled', is_locked = true, cancelled_at = NOW(), cancelled_by = $1, updated_at = NOW() WHERE id = $2`,
+    [adminId, cardId]
+  );
+
+  // 4. Log admin
+  await pool.query(
+    `INSERT INTO audit_logs (user_id, action, details, created_at) 
+     VALUES ($1, $2, $3, NOW())`,
+    [adminId, 'admin_cancel_card', `Carte physique ID ${cardId} annulée sur Stripe`]
+  );
+
+  return res.json({ message: "Carte annulée définitivement sur Stripe et en base." });
+};

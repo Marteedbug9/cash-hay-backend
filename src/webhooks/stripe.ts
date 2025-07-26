@@ -12,7 +12,7 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
   let event: Stripe.Event;
   try {
     event = stripe.webhooks.constructEvent(
-      req.body, // <--- Doit être le RAW body, pas JSON-parsé !
+      req.body, // Attention : req.body doit être le RAW body !
       sig,
       process.env.STRIPE_WEBHOOK_SECRET!
     );
@@ -26,9 +26,9 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
     await client.query('BEGIN');
 
     switch (event.type) {
+      // 1️⃣ Premier passage, log de l'intention (peut être optionnel)
       case 'issuing_authorization.request': {
         const auth = event.data.object as Stripe.Issuing.Authorization;
-        // Tu peux ici loguer ou enregistrer l'autorisation reçue, par exemple :
         await client.query(
           `INSERT INTO stripe_authorizations 
             (id, card_id, amount, currency, status, merchant_name, created_at)
@@ -40,17 +40,18 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
             auth.card?.id,
             auth.amount,
             auth.currency,
-            auth.approved ? 'approved' : 'pending',
+            auth.approved ? 'approved' : (auth.pending_request ? 'pending' : 'declined'),
             auth.merchant_data?.name || null,
           ]
         );
-        // Tu peux ici notifier l'utilisateur, ou mettre à jour la transaction locale, etc.
         break;
       }
 
+      // 2️⃣ Autorisation Stripe mise à jour (statut)
       case 'issuing_authorization.updated': {
         const auth = event.data.object as Stripe.Issuing.Authorization;
-        // Update de statut (ex : approved/refused)
+
+        // Met à jour le statut Stripe
         await client.query(
           `UPDATE stripe_authorizations 
            SET status = $1, updated_at = NOW()
@@ -60,10 +61,33 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
             auth.id
           ]
         );
-        // Tu peux lier ici à ta table transactions si besoin
+
+        // Si approuvé, crédite le bénéficiaire et complète la transaction
+        if (auth.approved) {
+          // Récupère la transaction liée à cette authorization Stripe (mapping sur ta colonne stripe_authorization_id)
+          const txRes = await client.query(
+            `SELECT * FROM transactions WHERE stripe_authorization_id = $1 AND status = 'waiting_stripe'`,
+            [auth.id]
+          );
+          const tx = txRes.rows[0];
+          if (tx) {
+            // Créditer le bénéficiaire
+            await client.query(
+              `UPDATE balances SET amount = amount + $1 WHERE user_id = $2`,
+              [tx.amount, tx.recipient_id]
+            );
+            await client.query(
+              `UPDATE transactions SET status = 'completed', updated_at = NOW() WHERE id = $1`,
+              [tx.id]
+            );
+            // Optionnel : notifier le bénéficiaire (mail/push/SMS)
+            // notifyUser(...)
+          }
+        }
         break;
       }
 
+      // 3️⃣ Carte Stripe modifiée
       case 'issuing_card.updated': {
         const card = event.data.object as Stripe.Issuing.Card;
         await client.query(

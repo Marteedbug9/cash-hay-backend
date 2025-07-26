@@ -3,10 +3,10 @@ import { Request, Response } from 'express';
 import pool from '../config/db';
 import { v4 as uuidv4 } from 'uuid';
 import PDFDocument from 'pdfkit';
-import { sendPushNotification, sendEmail, sendSMS } from '../utils/notificationUtils';
+import { sendPushNotification,notifyUser, sendEmail, sendSMS } from '../utils/notificationUtils';
 import { addNotification } from './notificationsController'; 
-// En haut du fichier
 import stripe from '../config/stripe';
+// En haut du fichier
 
 
 
@@ -294,7 +294,6 @@ export const withdraw = async (req: Request, res: Response) => {
   }
 };
 
-
 export const transfer = async (req: Request, res: Response) => {
   const senderId = req.user?.id;
   const { recipientUsername, amount } = req.body;
@@ -306,135 +305,144 @@ export const transfer = async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Données invalides.' });
   }
 
+  const client = await pool.connect();
   try {
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
+    await client.query('BEGIN');
 
-      // --- Recherche contact member (email/téléphone) ---
-      const cleanedContact = recipientUsername.trim().toLowerCase();
-      let memberRes;
-      if (cleanedContact.includes('@')) {
-        // Recherche stricte email (toujours minuscule)
-        memberRes = await client.query(
-          'SELECT id FROM members WHERE LOWER(contact) = $1',
-          [cleanedContact]
-        );
-      } else {
-        // Recherche téléphone (8 chiffres ou format international)
-        const digits = cleanedContact.replace(/\D/g, '');
-        memberRes = await client.query(
-          `SELECT id FROM members
-           WHERE
-             REPLACE(REPLACE(REPLACE(contact, '+', ''), ' ', ''), '-', '') = $1
-             OR RIGHT(REPLACE(REPLACE(REPLACE(contact, '+', ''), ' ', ''), '-', ''), 8) = $2`,
-          [digits, digits.slice(-8)]
-        );
-      }
-
-      if (!memberRes.rows.length) {
-        await client.query('ROLLBACK');
-        return res.status(404).json({ error: 'Destinataire introuvable ou non inscrit.' });
-      }
-      const memberId = memberRes.rows[0].id;
-      const recipientUserRes = await client.query(
-        'SELECT id, first_name, last_name FROM users WHERE member_id = $1',
-        [memberId]
+    // Recherche du destinataire (email ou téléphone)
+    const cleanedContact = recipientUsername.trim().toLowerCase();
+    let memberRes;
+    if (cleanedContact.includes('@')) {
+      memberRes = await client.query(
+        'SELECT id FROM members WHERE LOWER(contact) = $1',
+        [cleanedContact]
       );
-      if (!recipientUserRes.rows.length) {
-        await client.query('ROLLBACK');
-        return res.status(404).json({ error: 'Aucun utilisateur lié à ce membre.' });
-      }
-      const recipientId = recipientUserRes.rows[0].id;
-
-      // Empêcher auto-transfert
-      if (recipientId === senderId) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({ error: 'Impossible de vous envoyer de l’argent à vous-même.' });
-      }
-
-      // Vérifier balance + frais
-      const senderBalanceRes = await client.query(
-        'SELECT amount FROM balances WHERE user_id = $1 FOR UPDATE',
-        [senderId]
+    } else {
+      const digits = cleanedContact.replace(/\D/g, '');
+      memberRes = await client.query(
+        `SELECT id FROM members
+         WHERE
+           REPLACE(REPLACE(REPLACE(contact, '+', ''), ' ', ''), '-', '') = $1
+           OR RIGHT(REPLACE(REPLACE(REPLACE(contact, '+', ''), ' ', ''), '-', ''), 8) = $2`,
+        [digits, digits.slice(-8)]
       );
-      const senderBalance = parseFloat(senderBalanceRes.rows[0]?.amount || '0');
-
-      if (senderBalance < amount + transferFee) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({ error: 'Fonds insuffisants (incluant les frais).' });
-      }
-
-      // Débit/crédit balances
-      await client.query(
-        'UPDATE balances SET amount = amount - $1 WHERE user_id = $2',
-        [amount + transferFee, senderId]
-      );
-      await client.query(
-        'UPDATE balances SET amount = amount + $1 WHERE user_id = $2',
-        [amount, recipientId]
-      );
-
-      // Transaction principale
-      const txId = uuidv4();
-      await client.query(
-        `INSERT INTO transactions (id, user_id, type, amount, currency, recipient_id, member_id, source, status, ip_address, user_agent, created_at)
-         VALUES ($1, $2, 'transfer', $3, 'HTG', $4, $5, 'app', 'completed', $6, $7, NOW())`,
-        [txId, senderId, amount, recipientId, memberId, ip_address, user_agent]
-      );
-
-      // Audit log
-      await client.query(
-        `INSERT INTO audit_logs (id, user_id, action, ip_address, user_agent, details)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        [uuidv4(), senderId, 'transfer', ip_address, user_agent, `Transfert de ${amount} HTG à ${recipientId}`]
-      );
-
-      // Frais vers admin (adminId à configurer)
-      const adminId = process.env.ADMIN_USER_ID || 'admin-id-123';
-      await client.query(
-        'UPDATE balances SET amount = amount + $1 WHERE user_id = $2',
-        [transferFee, adminId]
-      );
-      await client.query(
-        `INSERT INTO transactions (id, user_id, type, amount, currency, recipient_id, source, status, description, ip_address, user_agent, created_at)
-         VALUES ($1, $2, 'fee', $3, 'HTG', $4, 'fee', 'completed', 'Frais de transfert', $5, $6, NOW())`,
-        [uuidv4(), senderId, transferFee, adminId, ip_address, user_agent]
-      );
-
-      await client.query('COMMIT');
-
-      // Email destinataire (asynchrone)
-      pool.query('SELECT email FROM users WHERE id = $1', [recipientId])
-        .then(res => {
-          const email = res.rows[0]?.email;
-          if (email) {
-            sendEmail({
-              to: email,
-              subject: 'Transfert reçu - Cash Hay',
-              text: `Vous avez reçu ${amount} HTG via Cash Hay.`
-            });
-          }
-        })
-        .catch(e => {
-          console.error('Erreur notif email:', e);
-        });
-
-      return res.status(200).json({ message: 'Transfert effectué avec succès.' });
-
-    } catch (error) {
-      await client.query('ROLLBACK');
-        console.error('❌ Erreur lors du transfert:', error); // AJOUTE CECI
-      throw error;
-    } finally {
-      client.release();
     }
-  } catch (err) {
-    console.error('❌ Erreur serveur globale:', err); // AJOUTE CECI AUSSI
+
+    if (!memberRes.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Destinataire introuvable ou non inscrit.' });
+    }
+    const memberId = memberRes.rows[0].id;
+    const recipientUserRes = await client.query(
+      'SELECT id, first_name, last_name FROM users WHERE member_id = $1',
+      [memberId]
+    );
+    if (!recipientUserRes.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Aucun utilisateur lié à ce membre.' });
+    }
+    const recipientId = recipientUserRes.rows[0].id;
+
+    // Empêcher auto-transfert
+    if (recipientId === senderId) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Impossible de vous envoyer de l’argent à vous-même.' });
+    }
+
+    // Vérifie la carte Stripe du sender
+    const senderCardRes = await client.query(
+      'SELECT stripe_card_id FROM cards WHERE user_id = $1 AND status = $2 LIMIT 1',
+      [senderId, 'active']
+    );
+    // La carte Stripe n’est **pas utilisée ici** mais tu peux la logger pour vérification/audit
+    const senderStripeCardId = senderCardRes.rows[0]?.stripe_card_id ?? null;
+
+    // Vérifie balance + frais (wallet interne)
+    const senderBalanceRes = await client.query(
+      'SELECT amount FROM balances WHERE user_id = $1 FOR UPDATE',
+      [senderId]
+    );
+    const senderBalance = parseFloat(senderBalanceRes.rows[0]?.amount || '0');
+    if (senderBalance < amount + transferFee) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Fonds insuffisants (incluant les frais).' });
+    }
+
+    // 1️⃣ --- Wallet internes (débit/crédit local) ---
+    await client.query(
+      'UPDATE balances SET amount = amount - $1 WHERE user_id = $2',
+      [amount + transferFee, senderId]
+    );
+    await client.query(
+      'UPDATE balances SET amount = amount + $1 WHERE user_id = $2',
+      [amount, recipientId]
+    );
+
+    // 2️⃣ --- Transaction principale ---
+    const txId = uuidv4();
+    await client.query(
+  `INSERT INTO transactions (
+      id, user_id, type, amount, currency, recipient_id, member_id, source, status, ip_address, user_agent, created_at
+    ) VALUES (
+      $1, $2, 'transfer', $3, 'HTG', $4, $5, 'stripe_issuing', 'waiting_stripe', $6, $7, NOW()
+    )`,
+  [txId, senderId, amount, recipientId, memberId, ip_address, user_agent]
+);
+
+
+
+    // 3️⃣ --- Audit log interne ---
+    await client.query(
+      `INSERT INTO audit_logs (id, user_id, action, ip_address, user_agent, details)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [uuidv4(), senderId, 'transfer', ip_address, user_agent, `Transfert de ${amount} HTG à ${recipientId}`]
+    );
+
+    // 4️⃣ --- Frais admin ---
+    const adminId = process.env.ADMIN_USER_ID || 'admin-id-123';
+    await client.query(
+      'UPDATE balances SET amount = amount + $1 WHERE user_id = $2',
+      [transferFee, adminId]
+    );
+    await client.query(
+      `INSERT INTO transactions (id, user_id, type, amount, currency, recipient_id, source, status, description, ip_address, user_agent, created_at)
+       VALUES ($1, $2, 'fee', $3, 'HTG', $4, 'fee', 'completed', 'Frais de transfert', $5, $6, NOW())`,
+      [uuidv4(), senderId, transferFee, adminId, ip_address, user_agent]
+    );
+
+    await client.query('COMMIT');
+
+    // 5️⃣ --- Email destinataire (asynchrone) ---
+   pool.query('SELECT email, phone, expo_push_token, first_name FROM users WHERE id = $1', [recipientId])
+      .then(async res => {
+        const { email, phone, expo_push_token, first_name } = res.rows[0] || {};
+        await notifyUser({
+          expoPushToken: expo_push_token,
+          email,
+          phone,
+          title: 'Transfert reçu',
+          body: `Bonjour${first_name ? ' ' + first_name : ''}, vous avez reçu ${amount} HTG via Cash Hay.`,
+          subject: 'Transfert reçu - Cash Hay',
+          sms: `Vous avez reçu ${amount} HTG via Cash Hay.`,
+        });
+      })
+      .catch(e => {
+        console.error('Erreur notification destinataire:', e);
+      });
+
+    return res.status(200).json({ 
+      message: 'Transfert effectué avec succès.',
+      tx_id: txId
+    });
+
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('❌ Erreur lors du transfert:', error);
     return res.status(500).json({ error: 'Erreur serveur lors du transfert.' });
+  } finally {
+    client.release();
   }
 };
-
 
 
 export const getBalance = async (req: Request, res: Response) => {
@@ -459,12 +467,50 @@ export const getBalance = async (req: Request, res: Response) => {
 
 
 export const updateBalance = async (userId: string, delta: number) => {
-  await pool.query(
-    `UPDATE balances 
-     SET amount = amount + $1, updated_at = CURRENT_TIMESTAMP
-     WHERE user_id = $2`,
-    [delta, userId]
-  );
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // 1️⃣ Met à jour le wallet interne (SQL)
+    await client.query(
+      `UPDATE balances 
+       SET amount = amount + $1, updated_at = CURRENT_TIMESTAMP
+       WHERE user_id = $2`,
+      [delta, userId]
+    );
+
+    // 2️⃣ Cherche la carte Stripe active du user (pour audit, logs, etc)
+    const cardRes = await client.query(
+      'SELECT stripe_card_id FROM cards WHERE user_id = $1 AND status = $2 LIMIT 1',
+      [userId, 'active']
+    );
+    if (!cardRes.rows.length) throw new Error('No active Stripe card.');
+    const stripeCardId = cardRes.rows[0].stripe_card_id;
+
+    // 3️⃣ (Optionnel) Trace l’intention de synchronisation Stripe pour un débit
+    if (delta < 0) {
+      const amountInCents = Math.abs(Math.round(delta * 100));
+      // Ici tu LOGGES juste l’intention pour audit/rapprochement avec Stripe (pas de call API)
+      await client.query(
+        `INSERT INTO audit_logs (user_id, action, details, created_at)
+         VALUES ($1, $2, $3, NOW())`,
+        [
+          userId,
+          'debit_intent',
+          `Intention de débit Stripe Issuing: ${amountInCents} cents sur card ${stripeCardId}`
+        ]
+      );
+      // La vraie transaction carte sera faite côté Stripe (via webhook, réel achat, etc)
+    }
+
+    // 4️⃣ Commit si tout OK
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
 };
 
 
@@ -474,109 +520,106 @@ export const requestMoney = async (req: Request, res: Response) => {
   const ip_address = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '';
   const user_agent = req.headers['user-agent'] || '';
   const cleanedContact = recipientUsername.trim().toLowerCase();
-let memberRes;
 
   if (!recipientUsername || !amount || isNaN(amount) || amount <= 0) {
     return res.status(400).json({ error: 'Données invalides.' });
   }
 
+  const client = await pool.connect();
   try {
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
+    await client.query('BEGIN');
 
-      // Trouve le member puis le user destinataire
-      if (cleanedContact.includes('@')) {
-  // Recherche stricte email (toujours minuscule)
-  memberRes = await client.query(
-    'SELECT id FROM members WHERE LOWER(contact) = $1',
-    [cleanedContact]
-  );
-} else {
-  // Recherche téléphone (8 chiffres ou format international)
-  const digits = cleanedContact.replace(/\D/g, '');
-  memberRes = await client.query(
-    `SELECT id FROM members
-     WHERE 
-       REPLACE(REPLACE(REPLACE(contact, '+', ''), ' ', ''), '-', '') = $1
-       OR RIGHT(REPLACE(REPLACE(REPLACE(contact, '+', ''), ' ', ''), '-', ''), 8) = $2`,
-    [digits, digits.slice(-8)]
-  );
-}
-      if (memberRes.rows.length === 0) {
-        await client.query('ROLLBACK');
-        return res.status(404).json({ error: 'Destinataire introuvable ou non inscrit.' });
-      }
-      const memberId = memberRes.rows[0].id;
-      const recipientUserRes = await client.query(
-        'SELECT id, first_name, last_name FROM users WHERE member_id = $1',
-        [memberId]
+    // Trouver le membre destinataire
+    let memberRes;
+    if (cleanedContact.includes('@')) {
+      memberRes = await client.query(
+        'SELECT id FROM members WHERE LOWER(contact) = $1',
+        [cleanedContact]
       );
-      if (recipientUserRes.rows.length === 0) {
-        await client.query('ROLLBACK');
-        return res.status(404).json({ error: 'Aucun utilisateur lié à ce membre.' });
-      }
-      const recipientId = recipientUserRes.rows[0].id;
-
-      // Empêcher auto-demande
-      if (recipientId === requesterId) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({ error: 'Impossible de vous faire une demande à vous-même.' });
-      }
-
-      // Enregistrement transaction "pending"
-      const txId = uuidv4();
-      await client.query(
-        `INSERT INTO transactions (id, user_id, type, amount, currency, recipient_id, member_id, source, status, ip_address, user_agent, created_at)
-         VALUES ($1, $2, 'request', $3, 'HTG', $4, $5, 'app', 'pending', $6, $7, NOW())`,
-        [txId, requesterId, amount, recipientId, memberId, ip_address, user_agent]
+    } else {
+      const digits = cleanedContact.replace(/\D/g, '');
+      memberRes = await client.query(
+        `SELECT id FROM members
+         WHERE 
+           REPLACE(REPLACE(REPLACE(contact, '+', ''), ' ', ''), '-', '') = $1
+           OR RIGHT(REPLACE(REPLACE(REPLACE(contact, '+', ''), ' ', ''), '-', ''), 8) = $2`,
+        [digits, digits.slice(-8)]
       );
-
-      // Audit log
-      await client.query(
-        `INSERT INTO audit_logs (id, user_id, action, ip_address, user_agent, details)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        [uuidv4(), requesterId, 'request_money', ip_address, user_agent, `Demande d’argent de ${amount} HTG à ${recipientId}`]
-      );
-
-      // Notification (idem avant)
-      await client.query(
-        `INSERT INTO notifications (
-          user_id, type, from_first_name, from_last_name, from_contact, from_profile_image, amount, status, transaction_id
-        )
-         SELECT $1, 'request', u.first_name, u.last_name, u.username, u.photo_url, $2, 'pending', $3
-         FROM users u WHERE u.id = $4`,
-        [recipientId, amount, txId, requesterId]
-      );
-
-      await client.query('COMMIT');
-
-      // Email destinataire (asynchrone)
-      pool.query('SELECT email FROM users WHERE id = $1', [recipientId])
-        .then(recipientRes => {
-          const email = recipientRes.rows[0]?.email;
-          if (email) {
-            return sendEmail({
-              to: email,
-              subject: "Demande d’argent Cash Hay",
-              text: `Vous avez reçu une demande d’argent de ${amount} HTG sur Cash Hay.`
-            });
-          }
-        })
-        .catch(notifErr => {
-          console.error('Erreur notification request:', notifErr);
-        });
-
-      return res.status(200).json({ message: 'Demande d’argent enregistrée avec succès.' });
-
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
     }
-  } catch (err) {
+
+    if (!memberRes.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Destinataire introuvable ou non inscrit.' });
+    }
+    const memberId = memberRes.rows[0].id;
+
+    // Trouver le user destinataire
+    const recipientUserRes = await client.query(
+      'SELECT id, first_name, last_name FROM users WHERE member_id = $1',
+      [memberId]
+    );
+    if (!recipientUserRes.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Aucun utilisateur lié à ce membre.' });
+    }
+    const recipientId = recipientUserRes.rows[0].id;
+
+    // Empêcher auto-demande
+    if (recipientId === requesterId) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Impossible de vous faire une demande à vous-même.' });
+    }
+
+    // Transaction "pending"
+    const txId = uuidv4();
+    await client.query(
+      `INSERT INTO transactions (id, user_id, type, amount, currency, recipient_id, member_id, source, status, ip_address, user_agent, created_at)
+       VALUES ($1, $2, 'request', $3, 'HTG', $4, $5, 'app', 'pending', $6, $7, NOW())`,
+      [txId, requesterId, amount, recipientId, memberId, ip_address, user_agent]
+    );
+
+    // Audit log
+    await client.query(
+      `INSERT INTO audit_logs (id, user_id, action, ip_address, user_agent, details)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [uuidv4(), requesterId, 'request_money', ip_address, user_agent, `Demande d’argent de ${amount} HTG à ${recipientId}`]
+    );
+
+    // Notification (pour le recipient)
+    await client.query(
+      `INSERT INTO notifications (
+        user_id, type, from_first_name, from_last_name, from_contact, from_profile_image, amount, status, transaction_id
+      )
+       SELECT $1, 'request', u.first_name, u.last_name, u.username, u.photo_url, $2, 'pending', $3
+       FROM users u WHERE u.id = $4`,
+      [recipientId, amount, txId, requesterId]
+    );
+
+    await client.query('COMMIT');
+
+    // Email destinataire (asynchrone)
+    pool.query('SELECT email FROM users WHERE id = $1', [recipientId])
+      .then(recipientRes => {
+        const email = recipientRes.rows[0]?.email;
+        if (email) {
+          sendEmail({
+            to: email,
+            subject: "Demande d’argent Cash Hay",
+            text: `Vous avez reçu une demande d’argent de ${amount} HTG sur Cash Hay.`
+          });
+        }
+      })
+      .catch(notifErr => {
+        console.error('Erreur notification request:', notifErr);
+      });
+
+    return res.status(200).json({ message: 'Demande d’argent enregistrée avec succès.' });
+
+  } catch (error) {
+    await client.query('ROLLBACK');
     return res.status(500).json({ error: 'Erreur serveur lors de la demande.' });
+  } finally {
+    client.release();
   }
 };
 
@@ -584,93 +627,114 @@ let memberRes;
 
 export const acceptRequest = async (req: Request, res: Response) => {
   const userId = req.user?.id;
-  const { id } = req.params; // ID de la notification
+  const { id } = req.params; // notification id
 
+  const client = await pool.connect();
   try {
-    // 1. 🔍 Récupérer la notification liée
-    const notifRes = await pool.query(
+    await client.query('BEGIN');
+
+    // 1️⃣ Récupérer la notification
+    const notifRes = await client.query(
       `SELECT * FROM notifications WHERE id = $1 AND user_id = $2 AND status = 'pending'`,
       [id, userId]
     );
     const notification = notifRes.rows[0];
-
     if (!notification) {
+      await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Demande introuvable ou déjà traitée.' });
     }
-
     const { transaction_id, amount } = notification;
 
-    // 2. 🔍 Vérifier la transaction liée
-    const txRes = await pool.query(
+    // 2️⃣ Récupérer la transaction
+    const txRes = await client.query(
       `SELECT * FROM transactions WHERE id = $1 AND status = 'pending'`,
       [transaction_id]
     );
     const transaction = txRes.rows[0];
     if (!transaction) {
+      await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Transaction introuvable ou déjà traitée.' });
     }
 
-    // 3. 💰 Vérifier le solde de la personne qui accepte
-    const balanceRes = await pool.query(
+    // 3️⃣ Vérifier le solde interne (en attente de débit Stripe pour verrouiller)
+    const balanceRes = await client.query(
       `SELECT amount FROM balances WHERE user_id = $1 FOR UPDATE`,
       [userId]
     );
     const currentBalance = parseFloat(balanceRes.rows[0]?.amount || '0');
-
     const tax = 0.57;
     const totalToDeduct = parseFloat(amount) + tax;
-
     if (currentBalance < totalToDeduct) {
+      await client.query('ROLLBACK');
       return res.status(400).json({
         error: `Solde insuffisant. Vous avez ${currentBalance} HTG mais ${totalToDeduct} HTG est requis.`,
       });
     }
 
-    // 4. 💳 Débiter le compte de l'utilisateur (celui qui accepte)
-    await pool.query(
-      'UPDATE balances SET amount = amount - $1 WHERE user_id = $2',
-      [totalToDeduct, userId]
+    // 4️⃣ Chercher la carte Stripe active du payeur
+    const cardRes = await client.query(
+      'SELECT stripe_card_id FROM cards WHERE user_id = $1 AND status = $2 LIMIT 1',
+      [userId, 'active']
     );
+    if (!cardRes.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: "Aucune carte Stripe active trouvée." });
+    }
+    const stripeCardId = cardRes.rows[0].stripe_card_id;
 
-    // 5. 💸 Créditer le compte du demandeur initial
-    await pool.query(
-      'UPDATE balances SET amount = amount + $1 WHERE user_id = $2',
-      [amount, transaction.user_id]
-    );
+    // 5️⃣ Stripe Issuing Authorization (débit à confirmer dans webhook)
+    let authorizationId: string | null = null;
+    try {
+      // On utilise stripe.issuing.authorizations.create SEULEMENT si supporté par ta version Stripe !
+      // Si tu as l’erreur “create does not exist”, il faut juste ENREGISTRER l’intention dans ta BDD
+      // et laisser Stripe t’envoyer le webhook (dans ce cas, ne pas appeler la méthode ici).
+      // Ici, on IMITE l’appel Stripe, sinon saute cette étape.
 
-    // 6. ✅ Mettre à jour la notification
-    await pool.query(
-      `UPDATE notifications SET status = 'accepted' WHERE id = $1`,
+      // await stripe.issuing.authorizations.create({
+      //   amount: Math.round(parseFloat(amount) * 100),
+      //   currency: 'usd',
+      //   card: stripeCardId,
+      //   merchant_data: {
+      //     merchant_category_code: '4829',
+      //     name: "Cash Hay P2P Request",
+      //   },
+      // });
+      // authorizationId = authorization.id;
+
+      // Tu peux aussi juste enregistrer dans la transaction qu'on attend un paiement Stripe (sans appeler l'API ici)
+      authorizationId = null;
+    } catch (stripeErr) {
+      await client.query('ROLLBACK');
+      console.error('❌ Stripe Issuing error:', stripeErr);
+      return res.status(400).json({ error: "Paiement refusé par Stripe.", stripe_error: (stripeErr as Error).message });
+    }
+
+    // 6️⃣ Mettre à jour les statuts BDD → toujours “pending” tant que Stripe n’a pas confirmé
+    await client.query(
+      `UPDATE notifications SET status = 'waiting_stripe', updated_at = NOW() WHERE id = $1`,
       [id]
     );
-
-    // 7. ✅ Mettre à jour la transaction
-    await pool.query(
-      `UPDATE transactions SET status = 'completed' WHERE id = $1`,
-      [transaction_id]
+    await client.query(
+      `UPDATE transactions SET status = 'waiting_stripe', stripe_authorization_id = $2 WHERE id = $1`,
+      [transaction_id, authorizationId]
     );
 
-    // 8. 💰 Transférer les frais à l’admin
-    const adminId = process.env.ADMIN_USER_ID || 'admin-id-123';
-    await pool.query(
-      'UPDATE balances SET amount = amount + $1 WHERE user_id = $2',
-      [tax, adminId]
-    );
+    await client.query('COMMIT');
 
-    // 9. 🧾 Enregistrer une transaction de frais
-    await pool.query(
-      `INSERT INTO transactions (id, user_id, type, amount, currency, recipient_id, source, status, description, created_at)
-       VALUES (gen_random_uuid(), $1, 'fee', $2, 'HTG', $3, 'request_fee', 'completed', 'Frais acceptation demande', NOW())`,
-      [userId, tax, adminId]
-    );
-
-    res.json({ message: 'Demande acceptée et transfert effectué avec succès.' });
+    res.json({
+      message: 'Paiement en cours de traitement. Le bénéficiaire sera crédité dès validation Stripe.',
+      stripe_authorization_id: authorizationId
+    });
 
   } catch (err) {
+    await client.query('ROLLBACK');
     console.error('❌ Erreur acceptRequest :', err);
     res.status(500).json({ error: 'Erreur lors de l’acceptation de la demande.' });
+  } finally {
+    client.release();
   }
 };
+
 
 
 export const cancelRequest = async (req: Request, res: Response) => {
@@ -719,13 +783,13 @@ export const getMonthlyStatement = async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Paramètre "month" requis (YYYY-MM)' });
   }
 
-  // Calcule les bornes de dates
   const monthStart = `${month}-01`;
   const nextMonth = new Date(monthStart);
   nextMonth.setMonth(nextMonth.getMonth() + 1);
   const monthEnd = nextMonth.toISOString().split('T')[0];
 
   try {
+    // 1️⃣ Transactions internes (wallet)
     const transactionsResult = await pool.query(
       `SELECT * FROM transactions 
        WHERE user_id = $1 
@@ -736,6 +800,58 @@ export const getMonthlyStatement = async (req: Request, res: Response) => {
     );
     const transactions = transactionsResult.rows;
 
+    // 2️⃣ Cherche la carte Stripe du user
+    const cardRes = await pool.query(
+      `SELECT stripe_card_id FROM cards WHERE user_id = $1 AND status = 'active' LIMIT 1`,
+      [userId]
+    );
+    let stripeIssuingTxs: any[] = [];
+    if (cardRes.rows.length) {
+      const stripeCardId = cardRes.rows[0].stripe_card_id;
+
+      // 3️⃣ Appel Stripe: liste les transactions Stripe Issuing de la carte
+      // Pagination Stripe = max 100 à la fois, ici on prend tout le mois
+      const issuingTxs = await stripe.issuing.transactions.list({
+        card: stripeCardId,
+        created: {
+          gte: Math.floor(new Date(monthStart).getTime() / 1000),
+          lt: Math.floor(new Date(monthEnd).getTime() / 1000)
+        },
+        limit: 100
+      });
+      stripeIssuingTxs = issuingTxs.data;
+    }
+
+    // 4️⃣ PDF - commence après erreurs potentielles
+    const doc = new PDFDocument();
+    res.setHeader('Content-type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="statement-${month}.pdf"`);
+    doc.pipe(res);
+
+    doc.fontSize(18).text(`Relevé de Compte - ${month}`, { align: 'center' });
+    doc.moveDown();
+    doc.fontSize(12).text(`Utilisateur: ${req.user?.username || userId}`);
+    doc.moveDown();
+    doc.text('Transactions internes Cash Hay :');
+    doc.moveDown();
+
+    transactions.forEach(tx => {
+      doc.text(
+        `${tx.created_at} | ${tx.type} | ${tx.amount} HTG | statut: ${tx.status} | ${tx.description || ''}`
+      );
+    });
+
+    doc.moveDown();
+    doc.text('Transactions Carte Stripe :');
+    doc.moveDown();
+
+    stripeIssuingTxs.forEach((tx: any) => {
+      doc.text(
+        `${new Date(tx.created * 1000).toISOString().slice(0, 10)} | ${tx.amount / 100} ${tx.currency.toUpperCase()} | ${tx.type} | ${tx.status} | ${tx.merchant_data?.name || ''}`
+      );
+    });
+
+    // Total interne (tu peux ajouter le total Stripe si besoin)
     const sumResult = await pool.query(
       `SELECT SUM(
          CASE WHEN type IN ('deposit', 'receive', 'request_recharge_accepted') THEN amount
@@ -749,38 +865,15 @@ export const getMonthlyStatement = async (req: Request, res: Response) => {
       [userId, monthStart, monthEnd]
     );
     const total = sumResult.rows[0]?.total || 0;
-
-    // PDF - commence à pipe APRÈS toutes les erreurs potentielles
-    const doc = new PDFDocument();
-    res.setHeader('Content-type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="statement-${month}.pdf"`);
-    doc.pipe(res);
-
-    doc.fontSize(18).text(`Relevé de Compte - ${month}`, { align: 'center' });
     doc.moveDown();
-    doc.fontSize(12).text(`Utilisateur: ${req.user?.username || userId}`);
-    doc.moveDown();
-    doc.text('Transactions :');
-    doc.moveDown();
-
-    transactions.forEach(tx => {
-      doc.text(
-        `${tx.created_at} | ${tx.type} | ${tx.amount} HTG | statut: ${tx.status} | ${tx.description || ''}`
-      );
-    });
-
-    doc.moveDown();
-    doc.fontSize(14).text(`Total net du mois : ${total} HTG`, { align: 'right' });
+    doc.fontSize(14).text(`Total net du mois (wallet): ${total} HTG`, { align: 'right' });
 
     doc.end();
   } catch (err) {
-    // S'IL Y A ERREUR, renvoie du JSON uniquement si tu n’as pas encore fait pipe sur res
-    // Si le PDF a déjà commencé à s'écrire, tu ne peux plus envoyer du JSON proprement !
     console.error('❌ Erreur statement:', err);
     if (!res.headersSent) {
       res.status(500).json({ error: 'Erreur serveur.' });
     } else {
-      // Optionnel: ferme le stream et laisse le client gérer l’erreur PDF côté front
       res.end();
     }
   }

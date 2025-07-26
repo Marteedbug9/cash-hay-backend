@@ -124,32 +124,57 @@ export const toggleCardLock = async (req: Request, res: Response) => {
   const userId = req.user?.id;
   const { is_locked } = req.body;
 
-  // Sécurité: vérifie que la carte existe d'abord (optionnel)
+  // 1. Trouve la carte active du user
   const { rows: cards } = await pool.query(
-    'SELECT * FROM cards WHERE user_id = $1 AND status IN ($2, $3)',
+    'SELECT * FROM cards WHERE user_id = $1 AND status IN ($2, $3) LIMIT 1',
     [userId, 'active', 'pending']
   );
   if (cards.length === 0) {
     return res.status(404).json({ error: "Aucune carte à verrouiller/déverrouiller." });
   }
+  const card = cards[0];
 
-  await pool.query(
-    'UPDATE cards SET is_locked = $1 WHERE user_id = $2 AND status IN ($3, $4)',
-    [is_locked, userId, 'active', 'pending']
-  );
-  return res.json({ message: `Carte ${is_locked ? 'verrouillée' : 'déverrouillée'}` });
+  // Vérifie que stripe_card_id existe
+  if (!card.stripe_card_id) {
+    return res.status(400).json({ error: "Aucun stripe_card_id associé à cette carte." });
+  }
+
+  try {
+    // 2. MAJ Stripe : 'inactive' pour lock, 'active' pour unlock
+    const newStatus = is_locked ? 'inactive' : 'active';
+
+    await stripe.issuing.cards.update(card.stripe_card_id, {
+      status: newStatus
+    });
+
+    // 3. MAJ base locale
+    await pool.query(
+      `UPDATE cards
+         SET is_locked = $1,
+             status = $2,
+             updated_at = NOW()
+       WHERE id = $3`,
+      [is_locked, newStatus, card.id]
+    );
+
+    return res.json({ message: `Carte ${is_locked ? 'verrouillée' : 'déverrouillée'} avec succès.` });
+  } catch (err) {
+    console.error('Erreur Stripe lors du lock:', err);
+    return res.status(500).json({ error: "Erreur Stripe lors du changement de statut de la carte." });
+  }
 };
+
 
 // ❌ Annuler la carte (ne supprime pas !)
 // Seul un agent Cash Hay peut supprimer définitivement après audit, sinon on la “lock” et “cancel”
 export const cancelCard = async (req: Request, res: Response) => {
   const userId = req.user?.id;
 
-  // Récupère la dernière carte physique en cours/pending
+  // 1. Cherche la dernière carte physique active/pending
   const { rows: cards } = await pool.query(
     `SELECT * FROM cards 
      WHERE user_id = $1 
-       AND category = 'physique' selon ta structure
+       AND category = 'physique'
        AND status IN ('active', 'pending')
      ORDER BY requested_at DESC
      LIMIT 1`,
@@ -160,26 +185,25 @@ export const cancelCard = async (req: Request, res: Response) => {
     return res.status(404).json({ error: "Aucune carte physique à annuler." });
   }
 
-  const cardId = cards[0].id;
+  const card = cards[0];
 
-  // Mets à jour le statut et verrouille la carte physique trouvée
+  // 2. Mets à jour le statut local : "pending_cancel" (pas encore annulée Stripe)
   await pool.query(
     `UPDATE cards 
-     SET status = 'cancelled', is_locked = true 
+     SET status = 'pending_cancel', is_locked = true, updated_at = NOW() 
      WHERE id = $1`,
-    [cardId]
+    [card.id]
   );
 
-  // Ajoute un audit log
+  // 3. Audit log
   await pool.query(
     `INSERT INTO audit_logs (user_id, action, details, created_at) 
      VALUES ($1, $2, $3, NOW())`,
-    [userId, 'cancel_card', `Carte physique ID ${cardId} annulée par utilisateur`]
+    [userId, 'request_cancel_card', `Demande d’annulation carte physique ID ${card.id}`]
   );
 
-  return res.json({ message: 'Carte physique annulée. Un agent validera l’annulation si nécessaire.' });
+  return res.json({ message: 'Demande d’annulation enregistrée. Un agent validera la suppression de la carte.' });
 };
-
 
 
 export const requestPhysicalCard = async (req: Request, res: Response) => {
@@ -363,7 +387,6 @@ export const getCurrentCard = async (req: Request, res: Response) => {
   }
 };
 
-
 export const activateCard = async (req: Request, res: Response) => {
   const userId = req.user?.id;
   const { cvc } = req.body;
@@ -373,19 +396,37 @@ export const activateCard = async (req: Request, res: Response) => {
   }
 
   try {
-    const result = await pool.query(
-      `UPDATE cards SET status = $1, activated_at = NOW() WHERE user_id = $2 AND status = $3`,
-      ['active', userId, 'pending']
+    // 1️⃣ Trouver la carte physique pending du user
+    const cardRes = await pool.query(
+      `SELECT * FROM cards WHERE user_id = $1 AND status = 'pending' AND category = 'physique' LIMIT 1`,
+      [userId]
+    );
+    if (cardRes.rows.length === 0) {
+      return res.status(400).json({ error: "Aucune carte physique à activer." });
+    }
+    const card = cardRes.rows[0];
+
+    // 2️⃣ Activation Stripe (API)
+    // Voir doc : https://stripe.com/docs/api/issuing/cards/activate
+    const activatedCard = await stripe.issuing.cards.update(
+      card.stripe_card_id, // l'ID Stripe
+      {
+        status: 'active',
+        // Le CVC doit être fourni si demandé (selon le pays/Stripe)
+        // activation: { cvc }, // Ancienne syntaxe (optionnelle selon API)
+      }
     );
 
-    if (result.rowCount === 0) {
-      return res.status(400).json({ error: "Aucune carte à activer." });
-    }
+    // 3️⃣ Mets à jour ta DB
+    await pool.query(
+      `UPDATE cards SET status = $1, activated_at = NOW() WHERE id = $2`,
+      ['active', card.id]
+    );
 
-    return res.json({ message: 'Carte activée avec succès' });
-  } catch (err) {
+    res.json({ message: 'Carte physique activée avec succès.' });
+  } catch (err: any) {
     console.error('❌ Erreur activation carte:', err);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: err.message || 'Erreur serveur Stripe' });
   }
 };
 
