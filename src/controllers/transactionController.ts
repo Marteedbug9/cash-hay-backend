@@ -6,8 +6,17 @@ import PDFDocument from 'pdfkit';
 import { sendPushNotification,notifyUser, sendEmail, sendSMS } from '../utils/notificationUtils';
 import { addNotification } from './notificationsController'; 
 import stripe from '../config/stripe';
-// En haut du fichier
+import { receiveFromCustomerBank } from '../utils/bankingUtils';
 
+// Fonction pour envoyer vers ta banque locale (ex: via API REST interne, à adapter)
+async function sendToLocalBankBusiness(accountInfo: any, amount: number) {
+  // Ici tu appelles l’API de ta banque ou effectues le virement
+  // Return { success: boolean, message?: string }
+  // Simulé :
+  return { success: true };
+}
+// En haut du fichier
+const WITHDRAWAL_MCCS = ['4829', '6011']; // Money Transfer, ATM
 
 
 export const getTransactions = async (req: Request, res: Response) => {
@@ -179,20 +188,33 @@ export const createTransaction = async (req: Request, res: Response) => {
 
 export const deposit = async (req: Request, res: Response) => {
   const userId = req.user?.id;
-  const { amount, source = 'manual', currency = 'HTG' } = req.body;
+  if (!userId) {
+    return res.status(401).json({ error: "Utilisateur non authentifié." });
+  }
+
+  const { amount, source = 'bank', currency = 'HTG', bank } = req.body;
   const ip_address = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '';
   const user_agent = req.headers['user-agent'] || '';
 
-  if (!amount || isNaN(amount) || amount <= 0) {
-    return res.status(400).json({ error: 'Montant invalide.' });
+  if (!amount || isNaN(amount) || amount <= 0 || !bank) {
+    return res.status(400).json({ error: 'Montant ou banque invalide.' });
   }
 
+  const client = await pool.connect();
   try {
-    const client = await pool.connect();
     await client.query('BEGIN');
 
+    // 1️⃣ Déclenche le virement bancaire du client → vers business local
+    const transferResult = await receiveFromCustomerBank(bank, amount, userId);
+    if (!transferResult.success) {
+      await client.query('ROLLBACK');
+      client.release();
+      return res.status(400).json({ error: 'Échec du virement depuis la banque du client.' });
+    }
+
+    // 2️⃣ Créditer le wallet interne de l'utilisateur
     await client.query(
-       `UPDATE balances SET amount = amount + $1, updated_at = NOW() WHERE user_id = $2`,
+      `UPDATE balances SET amount = amount + $1, updated_at = NOW() WHERE user_id = $2`,
       [amount, userId]
     );
     const txId = uuidv4();
@@ -202,22 +224,26 @@ export const deposit = async (req: Request, res: Response) => {
       [txId, userId, amount, currency, source, ip_address, user_agent]
     );
 
-    // Ajoute dans audit_logs (bonus traçabilité)
+    // 3️⃣ Audit log
     await client.query(
       `INSERT INTO audit_logs (id, user_id, action, ip_address, user_agent, details)
        VALUES ($1, $2, $3, $4, $5, $6)`,
-      [uuidv4(), userId, 'deposit', ip_address, user_agent, `Dépot de ${amount} ${currency}`]
+      [uuidv4(), userId, 'deposit', ip_address, user_agent, `Dépot de ${amount} ${currency} depuis ${bank.bank}`]
     );
 
     await client.query('COMMIT');
     client.release();
 
-    // Notification email après dépôt (asynchrone)
+    // 4️⃣ Notification email (async)
     try {
       const userRes = await pool.query('SELECT email FROM users WHERE id = $1', [userId]);
       const email = userRes.rows[0]?.email;
       if (email) {
-        await sendEmail({ to: email, subject: "Dépôt confirmé - Cash Hay", text: `Votre dépôt de ${amount} HTG est crédité sur votre compte.` });
+        await sendEmail({
+          to: email,
+          subject: "Dépôt confirmé - Cash Hay",
+          text: `Votre dépôt de ${amount} HTG a bien été reçu et crédité sur votre compte Cash Hay.`
+        });
       }
     } catch (notifErr) {
       console.error("Erreur notif dépôt:", notifErr);
@@ -225,6 +251,8 @@ export const deposit = async (req: Request, res: Response) => {
 
     res.status(200).json({ message: 'Dépôt effectué avec succès.', amount });
   } catch (error: any) {
+    await client.query('ROLLBACK');
+    client.release();
     console.error('❌ Erreur dépôt :', error.message);
     res.status(500).json({ error: 'Erreur serveur.' });
   }
@@ -233,64 +261,97 @@ export const deposit = async (req: Request, res: Response) => {
 
 export const withdraw = async (req: Request, res: Response) => {
   const userId = req.user?.id;
-  const { amount, currency = 'HTG', source = 'manual' } = req.body;
-  const ip_address = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '';
-  const user_agent = req.headers['user-agent'] || '';
+  const { amount, bank } = req.body;
 
-  if (!amount || isNaN(amount) || amount <= 0) {
-    return res.status(400).json({ error: 'Montant invalide.' });
+  if (!amount || isNaN(amount) || amount <= 0 || !bank) {
+    return res.status(400).json({ error: "Montant ou banque invalide." });
   }
 
+  const client = await pool.connect();
   try {
-    const client = await pool.connect();
     await client.query('BEGIN');
 
-    const balanceResult = await client.query(
-      `SELECT balance FROM balances WHERE user_id = $1`,
+    // 1️⃣ Vérifie le solde du client (wallet interne)
+    const balanceRes = await client.query(
+      'SELECT amount FROM balances WHERE user_id = $1 FOR UPDATE',
       [userId]
     );
-    const currentBalance = balanceResult.rows[0]?.balance || 0;
-    if (currentBalance < amount) {
-      client.release();
-      return res.status(400).json({ error: 'Fonds insuffisants.' });
+    const balance = parseFloat(balanceRes.rows[0]?.amount || '0');
+    if (balance < amount) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Solde insuffisant.' });
     }
 
+    // 2️⃣ Vérifie la carte Stripe liée à la banque choisie
+    let stripeCardId = null;
+    if (bank.type === 'card') {
+      stripeCardId = bank.stripe_card_id; // doit être fourni par le frontend si dispo
+
+      // Fallback DB si non fourni
+      if (!stripeCardId) {
+        const cardRes = await client.query(
+          'SELECT stripe_card_id FROM cards WHERE id = $1 AND user_id = $2 AND status = $3',
+          [bank.id, userId, 'active']
+        );
+        stripeCardId = cardRes.rows[0]?.stripe_card_id;
+        if (!stripeCardId) {
+          await client.query('ROLLBACK');
+          return res.status(404).json({ error: "Carte Stripe non trouvée." });
+        }
+      }
+
+      // 3️⃣ Vérifie la carte sur Stripe
+      const card = await stripe.issuing.cards.retrieve(stripeCardId);
+
+      // Status
+      if (card.status !== 'active') {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: "Carte Stripe non active." });
+      }
+
+      // Blocked categories (MCC)
+      const blocked = card.spending_controls?.blocked_categories || [];
+      if (blocked.some(mcc => WITHDRAWAL_MCCS.includes(mcc))) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: "Carte bloquée pour retrait ou transfert." });
+      }
+
+      // 4️⃣ (Optionnel) Vérifie le plafond restant (daily_spend_limit, monthly, etc)
+      //    Tu peux aussi créer une authorization test de 1 USD ou du montant
+      //    Mais pour Stripe Issuing, le retrait se fait via le terminal du partenaire bancaire.
+    }
+
+    // 5️⃣ Déduit le solde interne
     await client.query(
-      `UPDATE balances SET balance = balance - $1, updated_at = NOW() WHERE user_id = $2`,
+      'UPDATE balances SET amount = amount - $1 WHERE user_id = $2',
       [amount, userId]
     );
-    const txId = uuidv4();
-    await client.query(
-      `INSERT INTO transactions (id, user_id, type, amount, currency, source, status, ip_address, user_agent, created_at)
-       VALUES ($1, $2, 'withdraw', $3, $4, $5, 'completed', $6, $7, NOW())`,
-      [txId, userId, amount, currency, source, ip_address, user_agent]
-    );
 
-    // Ajoute dans audit_logs (bonus traçabilité)
+    // 6️⃣ Transfert vers la banque business locale
+    const localBusinessAccount = { ...bank }; // À adapter à ta logique
+    const result = await sendToLocalBankBusiness(localBusinessAccount, amount);
+    if (!result.success) {
+      await client.query('ROLLBACK');
+      return res.status(500).json({ error: "Transfert vers la banque locale échoué." });
+    }
+
+    // 7️⃣ Log transaction côté back
     await client.query(
-      `INSERT INTO audit_logs (id, user_id, action, ip_address, user_agent, details)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [uuidv4(), userId, 'withdraw', ip_address, user_agent, `Retrait de ${amount} ${currency}`]
+      `INSERT INTO transactions 
+        (id, user_id, type, amount, currency, status, recipient_id, description, created_at)
+        VALUES (gen_random_uuid(), $1, 'withdraw', $2, 'HTG', 'pending', NULL, 'Retrait banque', NOW())`,
+      [userId, amount]
     );
 
     await client.query('COMMIT');
+    res.json({ message: 'Retrait en cours de traitement. Vous serez notifié.' });
+
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Erreur retrait:', err);
+    res.status(500).json({ error: "Erreur lors du retrait." });
+  } finally {
     client.release();
-
-    // Notification email après retrait
-    try {
-      const userRes = await pool.query('SELECT email FROM users WHERE id = $1', [userId]);
-      const email = userRes.rows[0]?.email;
-      if (email) {
-        await sendEmail({ to: email, subject: "Retrait effectué - Cash Hay", text: `Vous avez retiré ${amount} HTG de votre compte.` });
-      }
-    } catch (notifErr) {
-      console.error("Erreur notif retrait:", notifErr);
-    }
-
-    res.status(200).json({ message: 'Retrait effectué avec succès.', amount });
-  } catch (error: any) {
-    console.error('❌ Erreur retrait :', error.message);
-    res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
 
