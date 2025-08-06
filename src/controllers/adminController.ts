@@ -177,52 +177,61 @@ export const validateIdentity = async (req: Request, res: Response) => {
   const { id } = req.params;
 
   try {
+    // 1. Vérifie si l'utilisateur existe
     const userRes = await pool.query(`SELECT * FROM users WHERE id = $1`, [id]);
     if (userRes.rowCount === 0) {
-      return res.status(404).json({ error: 'Utilisateur non trouvé' });
+      return res.status(404).json({ error: 'Utilisateur non trouvé.' });
     }
 
-    // 1. Mettre à jour la vérification locale
+    const user = userRes.rows[0];
+
+    // 2. Met à jour la vérification locale
     await pool.query(`
       UPDATE users 
       SET is_verified = true, identity_verified = true, verified_at = NOW()
       WHERE id = $1
     `, [id]);
 
-    // 2. Créer le cardholder chez Marqeta
-    const cardholderToken = await createMarqetaCardholder(id);
+    // 3. Crée le cardholder chez Marqeta (passe l'objet user)
+    const cardholderToken = await createMarqetaCardholder(user);
 
-    // 3. Créer la carte virtuelle automatiquement
+    // 4. Crée la carte virtuelle Marqeta
     const card = await createVirtualCard(cardholderToken);
 
-    // 4. Enregistrer la carte dans la base de données
+    // 5. Enregistre la carte dans la base de données
     await pool.query(`
       INSERT INTO cards (
-        user_id, marqeta_card_token, marqeta_cardholder_token,
+        id, user_id, marqeta_card_token, marqeta_cardholder_token,
         type, status, last4, created_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, NOW())
+      ) VALUES (
+        gen_random_uuid(), $1, $2, $3, $4, $5, $6, NOW()
+      )
     `, [
       id,
       card.token,
       cardholderToken,
       'virtual',
       card.state,
-      card.last_four_digits
+      card.last_four_digits,
     ]);
 
-    // 5. Répondre
-    res.json({
+    // 6. Répond avec succès
+    return res.status(200).json({
       success: true,
-      message: "Identité validée et carte virtuelle Marqeta créée",
+      message: 'Identité validée et carte virtuelle créée avec succès.',
       card: {
         token: card.token,
         last4: card.last_four_digits,
         status: card.state,
       }
     });
-  } catch (err) {
-    console.error('❌ Erreur validateIdentity:', err);
-    res.status(500).json({ error: "Erreur lors de la validation de l'identité" });
+
+  } catch (err: any) {
+    console.error('❌ Erreur dans validateIdentity:', err.response?.data || err.message);
+    return res.status(500).json({
+      error: "Erreur lors de la validation de l'identité ou de la création de la carte.",
+      detail: err.response?.data || err.message
+    });
   }
 };
 
