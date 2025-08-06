@@ -3,6 +3,7 @@ import cors from 'cors';
 import authRoutes from './routes/authRoutes';
 import adminRoutes from './routes/adminRoutes';
 import transactionRoutes from './routes/transactionRoutes';
+import marqetaRoutes from './routes/marqetaRoutes';
 
 const app = express();
 
@@ -29,4 +30,7 @@ app.get('/api', (req: Request, res: Response) => {
 // ✅ Route de transaction
 app.use('/api/transactions', transactionRoutes);
 
+
+
+app.use('/api', marqetaRoutes);
 export default app;
