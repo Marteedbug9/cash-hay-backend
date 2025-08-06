@@ -10,18 +10,19 @@ import requestIp from 'request-ip';
 import { File } from 'multer'; // ✅ ajoute ceci
 import db from '../config/db';
 import streamifier from 'streamifier';
+import { CardStatus, CardType, DEFAULT_CURRENCY } from '../constants/card';
 
-function generateCardNumber(): string {
-  // Génère un numéro fictif style Visa, à remplacer si tu as une vraie logique
-  return '5094' + Math.floor(100000000000 + Math.random() * 900000000000).toString();
-}
+// Exemple simple de génération de carte et date
+const generateCardNumber = (): string => {
+  return '42' + Math.floor(100000000000 + Math.random() * 900000000000); // Exemple: 42123456789012
+};
 
-function generateExpiryDate(): string {
+const generateExpiryDate = (): string => {
   const now = new Date();
-  const year = now.getFullYear() + 4;
   const month = (now.getMonth() + 1).toString().padStart(2, '0');
-  return `${month}/${year.toString().slice(-2)}`; // '06/29'
-}
+  const year = (now.getFullYear() + 4).toString().slice(2); // Ex: '29'
+  return `${month}/${year}`; // Format MM/YY
+};
 
 
 
@@ -45,7 +46,7 @@ export const register = async (req: Request, res: Response) => {
       error: "Nom d’utilisateur invalide. Seuls les caractères alphanumériques et @ # % & . _ - sont autorisés (3-30 caractères)."
     });
   }
-  // Vérif champs requis...
+
   if (!first_name || !last_name || !gender || !address || !city || !department || !country ||
     !email || !phone ||
     !birth_date || !birth_country || !birth_place ||
@@ -54,7 +55,6 @@ export const register = async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Tous les champs sont requis.' });
   }
 
-  // Démarre la transaction pour tout insérer d’un coup (atomicité)
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -67,76 +67,71 @@ export const register = async (req: Request, res: Response) => {
 
     // 1. USERS
     await client.query(
-  `INSERT INTO users (
-    id, first_name, last_name, gender, address, city, department, zip_code, country,
-    email, phone, birth_date, birth_country, birth_place,
-    id_type, id_number, id_issue_date, id_expiry_date,
-    username, password_hash, role, accept_terms, recovery_code
-  ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9,
-    $10, $11, $12, $13, $14,
-    $15, $16, $17, $18,
-    $19, $20, $21, $22, $23
-  )`,
-  [
-    userId, first_name, last_name, gender, address, city, department, zip_code, country,
-    email, phone, birth_date, birth_country, birth_place,
-    id_type, id_number, id_issue_date, id_expiry_date,
-    username, hashedPassword, 'user', true, recoveryCode
-  ]
-);
+      `INSERT INTO users (
+        id, first_name, last_name, gender, address, city, department, zip_code, country,
+        email, phone, birth_date, birth_country, birth_place,
+        id_type, id_number, id_issue_date, id_expiry_date,
+        username, password_hash, role, accept_terms, recovery_code
+      ) VALUES (
+        $1, $2, $3, $4, $5, $6, $7, $8, $9,
+        $10, $11, $12, $13, $14,
+        $15, $16, $17, $18,
+        $19, $20, $21, $22, $23
+      )`,
+      [
+        userId, first_name, last_name, gender, address, city, department, zip_code, country,
+        email, phone, birth_date, birth_country, birth_place,
+        id_type, id_number, id_issue_date, id_expiry_date,
+        username, hashedPassword, 'user', true, recoveryCode
+      ]
+    );
 
-    // Après la création du nouvel utilisateur (userId)...
-   
-   
-await client.query(
-  `INSERT INTO cards (
-      id, user_id, card_number, expiry_date, type, account_type, status, created_at
-    ) VALUES (
-      $1, $2, $3, $4, $5, $6, $7, $8, NOW()
-    )`,
-  [
-    cardId,
-    userId,
-    generateCardNumber(),      // À toi d’implémenter une fonction de génération !
-    generateExpiryDate(),      // Ex: '08/29'
-                // Ex: '934'
-    'virtual',
-    'checking',
-    'pending'                  // ou 'active' si validé direct
-  ]
-);
+    // 2. CARTES
+    await client.query(
+      `INSERT INTO cards (
+        id, user_id, legacy_card_number, expiry_date, type, account_type, status, created_at
+      ) VALUES (
+        $1, $2, $3, $4, $5, $6, $7, NOW()
+      )`,
+      [
+        cardId,
+        userId,
+        generateCardNumber(),
+        generateExpiryDate(),
+        CardType.VIRTUAL,
+        'checking',
+        CardStatus.PENDING
+      ]
+    );
 
-
-    // 2. BALANCES
+    // 3. BALANCES
     await client.query(
       'INSERT INTO balances (user_id, amount) VALUES ($1, $2)',
       [userId, 0]
     );
 
-    // 3. MEMBERS (on met bien l'user_id et le contact unique)
+    // 4. MEMBERS
     await client.query(
-  `INSERT INTO members (id, user_id, display_name, created_at, updated_at)
-   VALUES ($1, $2, $3, NOW(), NOW())`,
-  [memberId, userId, username]
-);
+      `INSERT INTO members (id, user_id, display_name, created_at, updated_at)
+       VALUES ($1, $2, $3, NOW(), NOW())`,
+      [memberId, userId, username]
+    );
 
-    // 4. LOGIN_HISTORY (optionnel mais recommandé)
+    // 5. LOGIN_HISTORY
     await client.query(
       'INSERT INTO login_history (user_id, ip_address, created_at) VALUES ($1, $2, NOW())',
       [userId, req.ip]
     );
 
-    // 5. Notifications initiales, audit_logs, etc. (optionnel selon besoin)
-
     await client.query('COMMIT');
 
-    // Envois email et sms (en dehors de la transaction, car pas critique)
+    // Envois email et SMS
     await sendEmail({
       to: email,
       subject: 'Bienvenue sur Cash Hay',
       text: `Bonjour ${first_name},\n\nBienvenue sur Cash Hay ! Votre compte a été créé avec succès. Veuillez compléter la vérification d'identité pour l'activation.\n\nL'équipe Cash Hay.`
     });
+
     await sendSMS(
       phone,
       `Bienvenue ${first_name} ! Votre compte Cash Hay est créé. Complétez votre vérification d'identité pour l'activer.`

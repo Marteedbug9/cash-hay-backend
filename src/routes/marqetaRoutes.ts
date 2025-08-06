@@ -1,9 +1,9 @@
 // src/routes/marqetaRoutes.ts
 import express from 'express';
-import { createCardholderController } from '../controllers/marqetaController';
+import { createCardholder } from '../config/marqetaService';
 
 const router = express.Router();
 
-router.post('/marqeta/cardholder', createCardholderController);
+router.post('/marqeta/cardholder', createCardholder);
 
 export default router;
