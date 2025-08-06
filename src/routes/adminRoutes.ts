@@ -3,15 +3,15 @@ import express from 'express';
 import pool from '../config/db';
 import { verifyToken, verifyAdmin } from '../middlewares/verifyToken';
 import { getAllPhysicalCards,getUserCustomCards,allowCardRequest,approveCustomCard,getUserAllCards,markCardAsPrinted } from '../controllers/adminController';
-import { handleStripeWebhook } from '../webhooks/stripe';
+import { handleMarqetaWebhook } from '../webhooks/marqeta';
+
 
 const router = Router();
 
 // Route pour les webhooks Stripe (ne pas protéger par les middlewares normaux)
-router.post('/stripe-webhook', 
-  express.raw({type: 'application/json'}), 
-  handleStripeWebhook
-);
+router.post('/marqeta-webhook', express.json(), handleMarqetaWebhook);
+
+
 
 // ➤ Liste des utilisateurs (résumé)
 router.get('/users', verifyToken, verifyAdmin, async (req, res) => {

@@ -1,6 +1,8 @@
 import { Request, Response } from 'express';
 import pool from '../config/db';
 import { sendPushNotification, sendEmail, sendSMS } from '../utils/notificationUtils';
+import { CardStatus, CardType, CardCategory, DEFAULT_CURRENCY,
+  DEFAULT_SPENDING_LIMIT, } from '../constants/card';
 import { v4 as uuidv4 } from 'uuid';
 import stripe from '../config/stripe';
 import Stripe from 'stripe';
@@ -12,10 +14,16 @@ interface CustomCardRequest {
   label?: string;
 }
 
+interface RequestVirtualCardBody {
+  phone?: string;
+  email?: string;
+}
+
+
 
 // 🟢 Demande de carte gratuite, paiement après 48h
 
-export const requestVirtualCard = async (req: Request, res: Response) => {
+export const requestVirtualCard = async (req: Request<{}, {}, RequestVirtualCardBody>, res: Response) => {
   const client = await pool.connect();
   try {
     // 1. Vérification de l'authentification
@@ -60,17 +68,40 @@ export const requestVirtualCard = async (req: Request, res: Response) => {
     // 4. Création de la carte virtuelle avec catégories directement définies
    const card = await stripe.issuing.cards.create({
   cardholder: cardholder.id,
-  type: 'virtual',
-  currency: 'usd',
-  status: 'active',
+  type: 'virtual' as Stripe.Issuing.CardCreateParams.Type,
+  currency: DEFAULT_CURRENCY,
+  status: 'active' as Stripe.Issuing.CardCreateParams.Status,
   spending_controls: {
     spending_limits: [{
-      amount: 5000,
+      amount: DEFAULT_SPENDING_LIMIT,
       interval: 'daily'
     }],
-    allowed_categories: ['financial_institutions'] // Stripe valide automatiquement ces valeurs
+    allowed_categories: ['financial_institutions']
   }
 });
+
+await client.query(
+  `INSERT INTO cards (
+    user_id, stripe_card_id, stripe_cardholder_id,
+    status, type, last4, expiry_date,
+    funding_currency, spending_controls, created_at, requested_at
+  ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())`,
+  [
+    userId,
+    card.id,
+    cardholder.id,
+    CardStatus.ACTIVE,
+    CardType.VIRTUAL,
+    card.last4,
+    `${card.exp_month}/${card.exp_year}`,
+    DEFAULT_CURRENCY.toUpperCase(),
+    JSON.stringify({
+      daily_limit: DEFAULT_SPENDING_LIMIT,
+      allowed_categories: ['atm', 'financial_institutions', 'restaurants']
+    }),
+  ]
+);
+
 
     // 5. Enregistrement en base de données
     await client.query(

@@ -1,6 +1,8 @@
 import { Request, Response } from 'express';
 import pool from '../config/db';
 import stripe from '../config/stripe';
+import { createMarqetaCardholder, createVirtualCard } from '../webhooks/marqetaService';
+
 
 // ➤ Liste tous les utilisateurs (avec info membre, profil, carte, etc.)
 export const getAllUsers = async (req: Request, res: Response) => {
@@ -170,32 +172,60 @@ export const setUserStatus = async (req: Request, res: Response) => {
 };
 
 // ➤ Valider identité
+// ➤ Valider identité
 export const validateIdentity = async (req: Request, res: Response) => {
   const { id } = req.params;
+
   try {
-    const result = await pool.query(
-      `UPDATE users 
-       SET identity_verified = true, 
-           is_verified = true,
-           verified_at = NOW(),
-           identity_request_enabled = true
-       WHERE id = $1
-       RETURNING id, username, email, identity_verified, is_verified, verified_at`,
-      [id]
-    );
-    if (result.rowCount === 0) {
-      return res.status(404).json({ error: "Utilisateur non trouvé." });
+    const userRes = await pool.query(`SELECT * FROM users WHERE id = $1`, [id]);
+    if (userRes.rowCount === 0) {
+      return res.status(404).json({ error: 'Utilisateur non trouvé' });
     }
-    await pool.query(
-      `INSERT INTO audit_logs (user_id, action, details)
-       VALUES ($1, $2, $3)`,
-      [id, 'validate_identity', 'Identité validée manuellement par admin']
-    );
-    res.json({ message: 'Identité validée avec succès.', user: result.rows[0] });
+
+    // 1. Mettre à jour la vérification locale
+    await pool.query(`
+      UPDATE users 
+      SET is_verified = true, identity_verified = true, verified_at = NOW()
+      WHERE id = $1
+    `, [id]);
+
+    // 2. Créer le cardholder chez Marqeta
+    const cardholderToken = await createMarqetaCardholder(id);
+
+    // 3. Créer la carte virtuelle automatiquement
+    const card = await createVirtualCard(cardholderToken);
+
+    // 4. Enregistrer la carte dans la base de données
+    await pool.query(`
+      INSERT INTO cards (
+        user_id, marqeta_card_token, marqeta_cardholder_token,
+        type, status, last4, created_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, NOW())
+    `, [
+      id,
+      card.token,
+      cardholderToken,
+      'virtual',
+      card.state,
+      card.last_four_digits
+    ]);
+
+    // 5. Répondre
+    res.json({
+      success: true,
+      message: "Identité validée et carte virtuelle Marqeta créée",
+      card: {
+        token: card.token,
+        last4: card.last_four_digits,
+        status: card.state,
+      }
+    });
   } catch (err) {
-    res.status(504).json({ error: 'Erreur lors de la validation de l’identité.' });
+    console.error('❌ Erreur validateIdentity:', err);
+    res.status(500).json({ error: "Erreur lors de la validation de l'identité" });
   }
 };
+
 
 // ➤ Réactiver la soumission d'identité (admin)
 export const reactivateIdentityRequest = async (req: Request, res: Response) => {
