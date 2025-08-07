@@ -3,7 +3,7 @@ import express from 'express';
 import pool from '../config/db';
 import { verifyToken, verifyAdmin } from '../middlewares/verifyToken';
 import { getAllPhysicalCards,getUserCustomCards,allowCardRequest,approveCustomCard,getUserAllCards,markCardAsPrinted,getCardShippingInfoHandler,
-  activatePhysicalCardHandler } from '../controllers/adminController';
+  activatePhysicalCardHandler,getCardProducts  } from '../controllers/adminController';
 import { handleMarqetaWebhook } from '../webhooks/marqeta';
 
 
@@ -17,6 +17,8 @@ router.post('/marqeta-webhook', handleMarqetaWebhook);
 
 router.get('/cards/:id/shipping', verifyAdmin, getCardShippingInfoHandler);
 router.post('/cards/:id/activate', verifyAdmin, activatePhysicalCardHandler);
+
+router.get('/card-products', verifyAdmin, getCardProducts);
 
 
 // ➤ Liste des utilisateurs (résumé)

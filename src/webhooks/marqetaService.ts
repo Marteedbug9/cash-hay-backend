@@ -7,13 +7,21 @@ dotenv.config();
 
 const MARQETA_API_BASE = 'https://sandbox-api.marqeta.com/v3';
 
+const MARQETA_APP_TOKEN = process.env.MARQETA_APP_TOKEN!;
+const MARQETA_ADMIN_TOKEN = process.env.MARQETA_ADMIN_TOKEN || '';
+const MARQETA_CARD_PRODUCT_TOKEN = process.env.MARQETA_CARD_PRODUCT_TOKEN!;
+
+if (!MARQETA_APP_TOKEN || !MARQETA_CARD_PRODUCT_TOKEN) {
+  throw new Error("❌ MARQETA_APP_TOKEN ou MARQETA_CARD_PRODUCT_TOKEN manquant dans .env");
+}
+
 const AUTH = {
-  username: process.env.MARQETA_APP_TOKEN!,
-  password: process.env.MARQETA_ADMIN_TOKEN || '', // vide autorisé en sandbox
+  username: MARQETA_APP_TOKEN,
+  password: MARQETA_ADMIN_TOKEN,
 };
 
 /**
- * Crée un utilisateur Marqeta (cardholder) avec le token `user_<uuid>`
+ * Crée un utilisateur Marqeta (cardholder)
  */
 export const createMarqetaCardholder = async (userId: string): Promise<string> => {
   const userRes = await pool.query(`SELECT * FROM users WHERE id = $1`, [userId]);
@@ -50,11 +58,11 @@ export const createMarqetaCardholder = async (userId: string): Promise<string> =
 };
 
 /**
- * Crée une carte virtuelle Marqeta pour un cardholder
+ * Crée une carte virtuelle
  */
 export const createVirtualCard = async (cardholderToken: string) => {
   const payload = {
-    card_product_token: process.env.MARQETA_CARD_PRODUCT_TOKEN!,
+    card_product_token: MARQETA_CARD_PRODUCT_TOKEN,
     cardholder_token: cardholderToken,
   };
 
@@ -68,11 +76,13 @@ export const createVirtualCard = async (cardholderToken: string) => {
   }
 };
 
-
+/**
+ * Crée une carte physique
+ */
 export const createPhysicalCard = async (cardholderToken: string) => {
   try {
     const response = await axios.post(`${MARQETA_API_BASE}/cards`, {
-      card_product_token: process.env.MARQETA_CARD_PRODUCT_TOKEN!,
+      card_product_token: MARQETA_CARD_PRODUCT_TOKEN,
       cardholder_token: cardholderToken,
       state: 'UNACTIVATED',
       fulfillment: {
@@ -98,18 +108,19 @@ export const createPhysicalCard = async (cardholderToken: string) => {
   }
 };
 
+/**
+ * Active une carte physique
+ */
 export const activatePhysicalCard = async (cardToken: string, pin: string) => {
   try {
-    // 1. Définir le code PIN
     await axios.post(`${MARQETA_API_BASE}/cards/${cardToken}/set_card_pin`, {
       card_token: cardToken,
-      pin
+      pin,
     }, { auth: AUTH });
 
-    // 2. Changer l’état de la carte
     const transitionRes = await axios.post(`${MARQETA_API_BASE}/cards/${cardToken}/transition`, {
       channel: 'API',
-      state: 'ACTIVE'
+      state: 'ACTIVE',
     }, { auth: AUTH });
 
     console.log(`✅ Carte activée : ${cardToken}`);
@@ -120,7 +131,9 @@ export const activatePhysicalCard = async (cardToken: string, pin: string) => {
   }
 };
 
-
+/**
+ * Récupère les infos de livraison d'une carte
+ */
 export const getCardShippingInfo = async (cardToken: string) => {
   try {
     const res = await axios.get(`${MARQETA_API_BASE}/cards/${cardToken}`, {
@@ -136,7 +149,14 @@ export const getCardShippingInfo = async (cardToken: string) => {
   }
 };
 
-export const saveCardToDatabase = async (userId: string, cardData: any, type: 'virtual' | 'physical') => {
+/**
+ * Sauvegarde une carte (virtuelle ou physique) dans la base
+ */
+export const saveCardToDatabase = async (
+  userId: string,
+  cardData: any,
+  type: 'virtual' | 'physical'
+) => {
   try {
     await pool.query(`
       INSERT INTO cards (
@@ -158,5 +178,30 @@ export const saveCardToDatabase = async (userId: string, cardData: any, type: 'v
   } catch (err) {
     console.error('❌ Erreur insertion carte:', err);
     throw new Error("Carte non enregistrée en base");
+  }
+};
+
+/**
+ * Liste tous les produits de carte configurés dans Marqeta
+ */
+export const listCardProducts = async () => {
+  try {
+    const response = await axios.get(`${MARQETA_API_BASE}/cardproducts?count=10`, {
+      auth: AUTH,
+    });
+
+    console.log('📦 Liste des card products disponibles :');
+    response.data.data.forEach((product: any, index: number) => {
+      console.log(`\n🪪 #${index + 1}`);
+      console.log(`Token        : ${product.token}`);
+      console.log(`Name         : ${product.name}`);
+      console.log(`Active       : ${product.active}`);
+      console.log(`Created Time : ${product.createdTime}`);
+    });
+
+    return response.data.data;
+  } catch (err: any) {
+    console.error('❌ Erreur récupération card products :', err.response?.data || err.message);
+    throw new Error("Impossible de lister les produits de carte");
   }
 };
