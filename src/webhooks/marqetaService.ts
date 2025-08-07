@@ -9,7 +9,7 @@ const MARQETA_API_BASE = 'https://sandbox-api.marqeta.com/v3';
 
 const MARQETA_APP_TOKEN = process.env.MARQETA_APP_TOKEN!;
 const MARQETA_ADMIN_TOKEN = process.env.MARQETA_ADMIN_TOKEN || '';
-const MARQETA_CARD_PRODUCT_TOKEN = 'cardproduct_test_1234';
+const MARQETA_CARD_PRODUCT_TOKEN = process.env.MARQETA_CARD_PRODUCT_TOKEN!;
 
 
 if (!process.env.MARQETA_APP_TOKEN) {
