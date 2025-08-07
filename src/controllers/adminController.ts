@@ -2,6 +2,21 @@ import { Request, Response } from 'express';
 import pool from '../config/db';
 import stripe from '../config/stripe';
 import { createMarqetaCardholder, createVirtualCard,activatePhysicalCard,getCardShippingInfo,listCardProducts } from '../webhooks/marqetaService';
+// src/controllers/adminController.ts
+import * as marqetaService from '../webhooks/marqetaService';
+
+
+
+
+export const listMarqetaCardProducts = async (req: Request, res: Response) => {
+  try {
+    const cardProducts = await marqetaService.listCardProducts();
+    res.json(cardProducts);
+  } catch (err: any) {
+    console.error('Erreur récupération card products:', err.message);
+    res.status(500).json({ error: 'Erreur serveur : card products non récupérés' });
+  }
+};
 
 
 // ➤ Liste tous les utilisateurs (avec info membre, profil, carte, etc.)
