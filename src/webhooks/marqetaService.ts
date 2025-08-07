@@ -7,13 +7,13 @@ dotenv.config();
 
 const MARQETA_API_BASE = 'https://sandbox-api.marqeta.com/v3';
 
-const MARQETA_APPLICATION_TOKEN = process.env.MARQETA_APP_TOKEN!;
+const MARQETA_APPLICATION_TOKEN = process.env.MARQETA_APPLICATION_TOKEN!;
 const MARQETA_ADMIN_TOKEN = process.env.MARQETA_ADMIN_TOKEN || '';
 const MARQETA_CARD_PRODUCT_TOKEN = process.env.MARQETA_CARD_PRODUCT_TOKEN!;
 
 
-if (!process.env.MARQETA_APP_TOKEN) {
-  throw new Error("❌ MARQETA_APP_TOKEN manquant dans .env");
+if (!process.env.MARQETA_APPLICATION_TOKEN ) {
+  throw new Error("❌ MARQETA_APPLICATION_TOKEN  manquant dans .env");
 }
 
 
