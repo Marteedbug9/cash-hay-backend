@@ -205,3 +205,4 @@ export const listCardProducts = async () => {
     throw new Error("Impossible de lister les produits de carte");
   }
 };
+listCardProducts();
