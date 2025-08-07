@@ -4,8 +4,10 @@ import stripe from '../config/stripe';
 import { createMarqetaCardholder, createVirtualCard,activatePhysicalCard,getCardShippingInfo,listCardProducts } from '../webhooks/marqetaService';
 // src/controllers/adminController.ts
 import * as marqetaService from '../webhooks/marqetaService';
-
-
+import { generateMockCardNumber, generateExpiryDate, generateCVV } from '../utils/cardUtils';
+const cardNumber = generateMockCardNumber();
+const expiryDate = generateExpiryDate();
+const cvv = generateCVV();
 
 
 export const listMarqetaCardProducts = async (req: Request, res: Response) => {
@@ -232,7 +234,6 @@ export const validateIdentity = async (req: Request, res: Response) => {
     const card = await createVirtualCard(cardholderToken);
     console.log("🟢 Réponse de création de carte virtuelle Marqeta:", card);
 
-    // 🔐 Vérification minimale
     if (!card || !card.token) {
       console.error("❌ Erreur: Carte non créée correctement.");
       return res.status(500).json({
@@ -241,13 +242,21 @@ export const validateIdentity = async (req: Request, res: Response) => {
       });
     }
 
-    // 7. Enregistre la carte dans la base de données
+    // 🧠 7. Génère les infos fictives
+    const cardNumber = generateMockCardNumber();
+    const expiryDate = generateExpiryDate();
+    const cvv = generateCVV();
+
+    // 💾 8. Enregistre dans la DB
     await pool.query(`
       INSERT INTO cards (
         id, user_id, marqeta_card_token, marqeta_cardholder_token,
-        type, status, last4, created_at
+        type, status, last4, created_at,
+        card_number, expiry_date, encrypted_data
       ) VALUES (
-        gen_random_uuid(), $1, $2, $3, $4, $5, $6, NOW()
+        gen_random_uuid(), $1, $2, $3,
+        $4, $5, $6, NOW(),
+        $7, $8, $9
       )
     `, [
       id,
@@ -256,10 +265,13 @@ export const validateIdentity = async (req: Request, res: Response) => {
       'virtual',
       card.state,
       card.last_four_digits,
+      cardNumber,
+      expiryDate,
+      JSON.stringify({ cvv }), // CVC stocké de manière "pseudo-sécurisée"
     ]);
     console.log("✅ Carte virtuelle enregistrée dans la base de données.");
 
-    // 8. Réponse succès
+    // ✅ 9. Succès
     return res.status(200).json({
       success: true,
       message: "Identité validée et carte virtuelle créée avec succès.",
@@ -267,7 +279,10 @@ export const validateIdentity = async (req: Request, res: Response) => {
         token: card.token,
         last4: card.last_four_digits,
         status: card.state,
-      }
+        cardNumber,
+        expiryDate,
+        cvv,
+      },
     });
 
   } catch (err: any) {
