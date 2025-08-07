@@ -9,11 +9,19 @@ const MARQETA_API_BASE = 'https://sandbox-api.marqeta.com/v3';
 
 const MARQETA_APP_TOKEN = process.env.MARQETA_APP_TOKEN!;
 const MARQETA_ADMIN_TOKEN = process.env.MARQETA_ADMIN_TOKEN || '';
-const MARQETA_CARD_PRODUCT_TOKEN = process.env.MARQETA_CARD_PRODUCT_TOKEN!;
+const MARQETA_CARD_PRODUCT_TOKEN = 'cardproduct_test_1234';
 
-if (!MARQETA_APP_TOKEN || !MARQETA_CARD_PRODUCT_TOKEN) {
-  throw new Error("❌ MARQETA_APP_TOKEN ou MARQETA_CARD_PRODUCT_TOKEN manquant dans .env");
+
+if (!process.env.MARQETA_APP_TOKEN) {
+  throw new Error("❌ MARQETA_APP_TOKEN manquant dans .env");
 }
+
+// 👉 À COMMENTER TEMPORAIREMENT :
+/*
+if (!process.env.MARQETA_CARD_PRODUCT_TOKEN) {
+  throw new Error("❌ MARQETA_CARD_PRODUCT_TOKEN manquant dans .env");
+}
+*/
 
 const AUTH = {
   username: MARQETA_APP_TOKEN,
