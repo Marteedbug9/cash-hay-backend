@@ -16,12 +16,11 @@ if (!process.env.MARQETA_APP_TOKEN) {
   throw new Error("❌ MARQETA_APP_TOKEN manquant dans .env");
 }
 
-// 👉 À COMMENTER TEMPORAIREMENT :
-/*
+
 if (!process.env.MARQETA_CARD_PRODUCT_TOKEN) {
   throw new Error("❌ MARQETA_CARD_PRODUCT_TOKEN manquant dans .env");
 }
-*/
+
 
 const AUTH = {
   username: MARQETA_APP_TOKEN,
