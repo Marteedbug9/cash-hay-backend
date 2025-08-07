@@ -2,15 +2,21 @@ import { Router } from 'express';
 import express from 'express';
 import pool from '../config/db';
 import { verifyToken, verifyAdmin } from '../middlewares/verifyToken';
-import { getAllPhysicalCards,getUserCustomCards,allowCardRequest,approveCustomCard,getUserAllCards,markCardAsPrinted } from '../controllers/adminController';
+import { getAllPhysicalCards,getUserCustomCards,allowCardRequest,approveCustomCard,getUserAllCards,markCardAsPrinted,getCardShippingInfoHandler,
+  activatePhysicalCardHandler } from '../controllers/adminController';
 import { handleMarqetaWebhook } from '../webhooks/marqeta';
 
 
 const router = Router();
 
 // Route pour les webhooks Stripe (ne pas protéger par les middlewares normaux)
-router.post('/marqeta-webhook', express.json(), handleMarqetaWebhook);
+// Ajoute en haut
+router.use(express.json()); // Appliquer à toutes les routes POST
 
+router.post('/marqeta-webhook', handleMarqetaWebhook);
+
+router.get('/cards/:id/shipping', verifyAdmin, getCardShippingInfoHandler);
+router.post('/cards/:id/activate', verifyAdmin, activatePhysicalCardHandler);
 
 
 // ➤ Liste des utilisateurs (résumé)
@@ -320,7 +326,7 @@ router.post('/users/:id/unblock-otp', verifyToken, verifyAdmin, async (req, res)
   }
 });
 
-router.get('/cards/physical', verifyAdmin, getAllPhysicalCards);
+router.get('/cards/physical', verifyToken,verifyAdmin, getAllPhysicalCards);
 
 router.get('/users/:id/custom-cards', verifyAdmin, getUserCustomCards);
 

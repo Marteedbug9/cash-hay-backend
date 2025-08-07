@@ -17,6 +17,7 @@ import requestRoutes from './routes/requestRoutes';
 import businessAccountRoutes from './routes/businessAccountRoutes';
 import businessAdminRoutes from './routes/businessAdminRoutes';
 import authorizationRoutes from './routes/authorizationRoutes';
+import webhookRoutes from './routes/webhookRoutes';
 import pool from './config/db'; // Connexion test DB
 
 const app = express();
@@ -42,6 +43,7 @@ app.use('/api/business-admin', businessAdminRoutes);
 
 app.use('/api/authorizations', authorizationRoutes);
 
+app.use('/webhooks', webhookRoutes); 
 // ✅ Vérifie DB et démarre serveur
 pool.query('SELECT NOW()')
   .then(() => {

@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import pool from '../config/db';
 import stripe from '../config/stripe';
-import { createMarqetaCardholder, createVirtualCard } from '../webhooks/marqetaService';
+import { createMarqetaCardholder, createVirtualCard,activatePhysicalCard,getCardShippingInfo  } from '../webhooks/marqetaService';
 
 
 // ➤ Liste tous les utilisateurs (avec info membre, profil, carte, etc.)
@@ -138,9 +138,6 @@ user.cards = cardsRes.rows;
 };
 
 
-
-
-
 // ➤ Activer / désactiver un compte utilisateur
 export const setUserVerified = async (req: Request, res: Response) => {
   const { id } = req.params;
@@ -185,20 +182,34 @@ export const validateIdentity = async (req: Request, res: Response) => {
 
     const user = userRes.rows[0];
 
-    // 2. Met à jour la vérification locale
+    // 2. Vérifie si l'identité est déjà validée
+    if (user.identity_verified) {
+      return res.status(400).json({ error: "L'identité a déjà été validée." });
+    }
+
+    // 3. Vérifie si une carte virtuelle existe déjà
+    const cardCheck = await pool.query(
+      `SELECT * FROM cards WHERE user_id = $1 AND type = 'virtual'`,
+      [id]
+    );
+    if (cardCheck?.rowCount && cardCheck.rowCount > 0) {
+      return res.status(400).json({ error: "Carte virtuelle déjà existante pour cet utilisateur." });
+    }
+
+    // 4. Met à jour la vérification locale
     await pool.query(`
       UPDATE users 
       SET is_verified = true, identity_verified = true, verified_at = NOW()
       WHERE id = $1
     `, [id]);
 
-    // 3. Crée le cardholder chez Marqeta (passe l'objet user)
-    const cardholderToken = await createMarqetaCardholder(user);
+    // 5. Crée le cardholder chez Marqeta
+    const cardholderToken = await createMarqetaCardholder(id);
 
-    // 4. Crée la carte virtuelle Marqeta
+    // 6. Crée la carte virtuelle Marqeta
     const card = await createVirtualCard(cardholderToken);
 
-    // 5. Enregistre la carte dans la base de données
+    // 7. Enregistre la carte dans la base de données
     await pool.query(`
       INSERT INTO cards (
         id, user_id, marqeta_card_token, marqeta_cardholder_token,
@@ -215,10 +226,10 @@ export const validateIdentity = async (req: Request, res: Response) => {
       card.last_four_digits,
     ]);
 
-    // 6. Répond avec succès
+    // 8. Réponse succès
     return res.status(200).json({
       success: true,
-      message: 'Identité validée et carte virtuelle créée avec succès.',
+      message: "Identité validée et carte virtuelle créée avec succès.",
       card: {
         token: card.token,
         last4: card.last_four_digits,
@@ -500,3 +511,30 @@ export const adminCancelCard = async (req: Request, res: Response) => {
 
   return res.json({ message: "Carte annulée définitivement sur Stripe et en base." });
 };
+
+export const activatePhysicalCardHandler = async (req: Request, res: Response) => {
+  const cardToken = req.params.id;
+  const { pin } = req.body;
+
+  if (!pin || pin.length !== 4) {
+    return res.status(400).json({ error: 'PIN invalide (4 chiffres requis)' });
+  }
+
+  try {
+    const result = await activatePhysicalCard(cardToken, pin);
+    res.status(200).json({ message: 'Carte activée avec succès', result });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+export const getCardShippingInfoHandler = async (req: Request, res: Response) => {
+  const cardToken = req.params.id;
+
+  try {
+    const shippingInfo = await getCardShippingInfo(cardToken);
+    res.status(200).json(shippingInfo);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+}

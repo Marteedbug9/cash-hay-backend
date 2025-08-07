@@ -6,6 +6,14 @@ import { CardStatus, CardType, CardCategory, DEFAULT_CURRENCY,
 import { v4 as uuidv4 } from 'uuid';
 import stripe from '../config/stripe';
 import Stripe from 'stripe';
+import axios from 'axios';
+import { MARQETA_API_BASE, MARQETA_APP_TOKEN, MARQETA_ADMIN_TOKEN } from '../webhooks/marqeta';
+
+
+const MARQETA_AUTH = {
+  username: MARQETA_APP_TOKEN!,
+  password: MARQETA_ADMIN_TOKEN!,
+};
 
 
 interface CustomCardRequest {
@@ -422,42 +430,51 @@ export const activateCard = async (req: Request, res: Response) => {
   const userId = req.user?.id;
   const { cvc } = req.body;
 
-  if (!cvc || cvc.length !== 3) {
+  if (!cvc || typeof cvc !== 'string' || cvc.length !== 3) {
     return res.status(400).json({ error: 'Code CVC invalide' });
   }
 
   try {
-    // 1️⃣ Trouver la carte physique pending du user
-    const cardRes = await pool.query(
-      `SELECT * FROM cards WHERE user_id = $1 AND status = 'pending' AND category = 'physique' LIMIT 1`,
-      [userId]
+    // 1️⃣ Vérifier si une carte physique PENDING existe
+    const result = await pool.query(
+      `SELECT * FROM cards WHERE user_id = $1 AND type = $2 AND status = $3 LIMIT 1`,
+      [userId, CardType.PHYSICAL, CardStatus.PENDING]
     );
-    if (cardRes.rows.length === 0) {
-      return res.status(400).json({ error: "Aucune carte physique à activer." });
-    }
-    const card = cardRes.rows[0];
 
-    // 2️⃣ Activation Stripe (API)
-    // Voir doc : https://stripe.com/docs/api/issuing/cards/activate
-    const activatedCard = await stripe.issuing.cards.update(
-      card.stripe_card_id, // l'ID Stripe
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Aucune carte physique en attente trouvée.' });
+    }
+
+    const card = result.rows[0];
+
+    // 2️⃣ Appel à Marqeta pour activer la carte
+    const marqetaRes = await axios.put(
+      `${MARQETA_API_BASE}/cards/${card.marqeta_token}`,
       {
-        status: 'active',
-        // Le CVC doit être fourni si demandé (selon le pays/Stripe)
-        // activation: { cvc }, // Ancienne syntaxe (optionnelle selon API)
+        state: 'ACTIVE', // Uppercase pour Marqeta
+        // activation: { cvc }, // ⚠️ facultatif, utilisé si Marqeta le demande
+      },
+      {
+        auth: {
+          username: MARQETA_APP_TOKEN,
+          password: MARQETA_ADMIN_TOKEN,
+        },
+        headers: {
+          'Content-Type': 'application/json',
+        },
       }
     );
 
-    // 3️⃣ Mets à jour ta DB
+    // 3️⃣ Mettre à jour la base locale
     await pool.query(
-      `UPDATE cards SET status = $1, activated_at = NOW() WHERE id = $2`,
-      ['active', card.id]
+      `UPDATE cards SET status = $1, activated_at = NOW(), updated_at = NOW() WHERE id = $2`,
+      [CardStatus.ACTIVE, card.id]
     );
 
-    res.json({ message: 'Carte physique activée avec succès.' });
+    res.json({ message: 'Carte physique activée avec succès.', marqeta: marqetaRes.data });
   } catch (err: any) {
-    console.error('❌ Erreur activation carte:', err);
-    res.status(500).json({ error: err.message || 'Erreur serveur Stripe' });
+    console.error('❌ Erreur activation carte physique :', err.response?.data || err.message);
+    res.status(500).json({ error: err.response?.data || 'Erreur serveur' });
   }
 };
 
