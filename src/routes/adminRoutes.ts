@@ -4,7 +4,8 @@ import pool from '../config/db';
 import { verifyToken, verifyAdmin } from '../middlewares/verifyToken';
 import { getAllPhysicalCards,getUserCustomCards,allowCardRequest,approveCustomCard,getUserAllCards,markCardAsPrinted,getCardShippingInfoHandler,
   activatePhysicalCardHandler,getCardProducts, listMarqetaCardProducts  } from '../controllers/adminController';
-import { handleMarqetaWebhook } from '../webhooks/marqeta';
+import { handleMarqetaWebhook, } from '../webhooks/marqeta';
+import { listCardProducts } from '../webhooks/marqetaService';
 
 
 const router = Router();
@@ -19,7 +20,14 @@ router.get('/cards/:id/shipping', verifyAdmin, getCardShippingInfoHandler);
 router.post('/cards/:id/activate', verifyAdmin, activatePhysicalCardHandler);
 
 router.get('/card-products', verifyAdmin, getCardProducts);
-router.get('/cardproducts', verifyAdmin, listMarqetaCardProducts);
+router.get('/cardproducts', verifyAdmin, async (req, res) => {
+  try {
+    const data = await listCardProducts();
+    res.status(200).json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 
 // ➤ Liste des utilisateurs (résumé)
