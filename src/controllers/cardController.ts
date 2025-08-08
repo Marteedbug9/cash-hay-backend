@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import pool from '../config/db';
+import db from '../config/db';
 import { sendPushNotification, sendEmail, sendSMS } from '../utils/notificationUtils';
 import { CardStatus, CardType, CardCategory, DEFAULT_CURRENCY,
   DEFAULT_SPENDING_LIMIT, } from '../constants/card';
@@ -692,5 +693,37 @@ export const requestPhysicalCustomCard = async (req: Request & { user?: { id: st
   }
 };
 
+export const getCardPanFromMarqeta = async (req: Request, res: Response) => {
+  const { id } = req.params;
+
+try {
+    // Vérifie si l'utilisateur est authentifié
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Non authentifié' });
+
+    // Vérifie que la carte appartient à cet utilisateur
+    const result = await db.query('SELECT * FROM cards WHERE id = $1 AND user_id = $2', [id, userId]);
+    if (result.rows.length === 0) {
+      return res.status(403).json({ error: 'Accès interdit à cette carte' });
+    }
+
+    // Récupération des infos sensibles depuis Marqeta
+    const response = await axios.get(
+      `https://sandbox-api.marqeta.com/v3/cards/${id}/pan`,
+      {
+        auth: {
+          username: process.env.MARQETA_APP_TOKEN!,
+          password: process.env.MARQETA_ADMIN_ACCESS_TOKEN!,
+        },
+      }
+    );
+
+    const { pan, cvv_number, expiration } = response.data;
+    res.json({ pan, cvv: cvv_number, expiration });
+  } catch (err: any) {
+    console.error('Erreur récupération PAN:', err.response?.data || err.message);
+    res.status(500).json({ error: "Impossible de récupérer les infos de carte." });
+  }
+};
 
 
