@@ -17,6 +17,7 @@ declare global {
 
     interface Request {
       user?: UserPayload;
+      admin?: UserPayload;           
       file?: MulterFile;
       files?: { [fieldname: string]: MulterFile[] };
     }

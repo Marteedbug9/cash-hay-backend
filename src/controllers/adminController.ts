@@ -1,6 +1,9 @@
 import { Request, Response } from 'express';
 import pool from '../config/db';
 import stripe from '../config/stripe';
+import { sha256, makeCode } from '../utils/security';
+import { logAudit } from '../services/audit';
+import { sendLetter } from '../services/addressMail';
 import { createMarqetaCardholder, createVirtualCard,activatePhysicalCard,getCardShippingInfo,listCardProducts } from '../webhooks/marqetaService';
 // src/controllers/adminController.ts
 import * as marqetaService from '../webhooks/marqetaService';
@@ -597,3 +600,172 @@ export const getCardProducts = async (req: Request, res: Response) => {
     res.status(500).json({ success: false, message: err.message });
   }
 };
+
+
+export async function verifyAddressMail(req: Request, res: Response) {
+   const userId = req.user?.id;
+  const { code } = req.body;
+
+  if (!userId) return res.status(401).json({ error: 'unauthorized' });
+  if (!code) return res.status(400).json({ error: 'code_required' });
+
+  const { rows } = await pool.query(
+    `SELECT * FROM address_mail_verifications
+     WHERE user_id=$1 AND status IN ('mailed','delivered') AND expires_at > now()
+     ORDER BY created_at DESC LIMIT 1`,
+    [userId]
+  );
+  if (rows.length === 0) return res.status(404).json({ error: 'no_active_request' });
+
+  const v = rows[0];
+  if (v.attempt_count >= v.max_attempts) return res.status(429).json({ error: 'too_many_attempts' });
+
+  const ok = sha256(code) === v.code_hash;
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    await client.query(
+      `UPDATE address_mail_verifications
+       SET attempt_count = attempt_count + 1, updated_at=now()
+       WHERE id=$1`,
+      [v.id]
+    );
+
+    if (!ok) {
+      await client.query('COMMIT');
+      return res.status(400).json({ error: 'invalid_code' });
+    }
+
+    await client.query(
+      `UPDATE address_mail_verifications
+       SET status='verified', verified_at=now(), updated_at=now()
+       WHERE id=$1`,
+      [v.id]
+    );
+    await client.query(
+      `UPDATE users SET address_verified=true, address_verified_at=now()
+       WHERE id=$1`,
+      [userId]
+    );
+
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+
+  await logAudit(userId, 'address_mail_verified', req);
+  return res.json({ ok: true });
+}
+
+export async function startAddressMail(req: Request, res: Response) {
+  const userId = req.user?.id;
+  const { address_line1, address_line2, city, department, postal_code, country } = req.body;
+
+  if (!userId) return res.status(401).json({ error: 'unauthorized' });
+  if (!address_line1 || !city || !country) {
+    return res.status(400).json({ error: 'invalid_address' });
+  }
+
+  // Empêcher multiples demandes actives non expirées
+  const active = await pool.query(
+    `SELECT id FROM address_mail_verifications
+     WHERE user_id=$1 AND status IN ('mailed','delivered') AND expires_at > now()
+     ORDER BY created_at DESC LIMIT 1`,
+    [userId]
+  );
+  if (active.rowCount) return res.status(409).json({ error: 'already_active_request' });
+
+  const code = makeCode(6);
+  const code_hash = sha256(code);
+
+  const { pdfUrl, providerId } = await sendLetter({
+    to: { address_line1, address_line2, city, department, postal_code, country },
+    code,
+    user: { id: userId }
+  });
+
+  const ins = await pool.query(
+    `INSERT INTO address_mail_verifications
+      (user_id, address_line1, address_line2, city, department, postal_code, country,
+       code_hash, code_length, status, provider, provider_tracking_id, letter_url,
+       mailed_at, expires_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'mailed',$10,$11,$12, now(), now()+ interval '90 days')
+     RETURNING id`,
+    [userId, address_line1, address_line2 || null, city, department || null, postal_code || null, country,
+     code_hash, 6, providerId, pdfUrl, pdfUrl]
+  );
+
+  await logAudit(userId, 'address_mail_started', req);
+  return res.json({ status: 'mailed', requestId: ins.rows[0].id });
+}
+
+export async function decideKyc(req: Request, res: Response) {
+  const adminId = req.admin?.id;
+  const { id } = req.params;            // identity_verifications.id
+  const { decision, reason } = req.body;
+
+  if (!adminId) return res.status(401).json({ error: 'unauthorized' });
+  if (!['approved','rejected'].includes(decision)) {
+    return res.status(400).json({ error: 'invalid_decision' });
+  }
+
+  const ivRes = await pool.query(
+    'SELECT user_id FROM identity_verifications WHERE id=$1',
+    [id]
+  );
+  if (ivRes.rowCount === 0) return res.status(404).json({ error: 'not_found' });
+
+  const userId = ivRes.rows[0].user_id as string;
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+
+    if (decision === 'approved') {
+      await client.query(
+        `UPDATE identity_verifications
+         SET status='approved', reviewer_id=$1, reviewed_at=now()
+         WHERE id=$2`,
+        [adminId, id]
+      );
+      await client.query(
+        `UPDATE users SET identity_verified=true, verified_at=now()
+         WHERE id=$1`,
+        [userId]
+      );
+
+      // TODO: création de la carte (Marqeta/Stripe) puis insert dans "cards"
+      // await client.query(...);
+
+      await client.query('COMMIT');
+      await logAudit(userId, 'kyc_approved', req);
+      return res.json({ ok: true });
+    } else {
+      await client.query(
+        `UPDATE identity_verifications
+         SET status='rejected', rejection_reason=$1, reviewer_id=$2, reviewed_at=now()
+         WHERE id=$3`,
+        [reason || 'unspecified', adminId, id]
+      );
+      await client.query(
+        `UPDATE users SET identity_request_enabled=true
+         WHERE id=$1`,
+        [userId]
+      );
+
+      await client.query('COMMIT');
+      await logAudit(userId, 'kyc_rejected', req, { reason });
+      return res.json({ ok: true });
+    }
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+}
