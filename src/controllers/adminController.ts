@@ -603,50 +603,64 @@ export const getCardProducts = async (req: Request, res: Response) => {
 
 
 export async function verifyAddressMail(req: Request, res: Response) {
-   const userId = req.user?.id;
+  const userId = (req as any).user?.id;
   const { code } = req.body;
 
   if (!userId) return res.status(401).json({ error: 'unauthorized' });
   if (!code) return res.status(400).json({ error: 'code_required' });
 
   const { rows } = await pool.query(
-    `SELECT * FROM address_mail_verifications
-     WHERE user_id=$1 AND status IN ('mailed','delivered') AND expires_at > now()
-     ORDER BY created_at DESC LIMIT 1`,
+    `SELECT id, code_hash, attempt_count, max_attempts
+       , expires_at, status
+     FROM address_mail_verifications
+     WHERE user_id=$1
+       AND status IN ('mailed','delivered')
+       AND expires_at > now()
+     ORDER BY created_at DESC
+     LIMIT 1`,
     [userId]
   );
-  if (rows.length === 0) return res.status(404).json({ error: 'no_active_request' });
+
+  if (rows.length === 0) {
+    // L’app gère 'no_active_request' → elle repasse à l’étape 1
+    return res.status(400).json({ error: 'no_active_request' });
+  }
 
   const v = rows[0];
-  if (v.attempt_count >= v.max_attempts) return res.status(429).json({ error: 'too_many_attempts' });
 
-  const ok = sha256(code) === v.code_hash;
+  if (v.attempt_count >= v.max_attempts) {
+    return res.status(429).json({ error: 'too_many_attempts' });
+  }
+
+  const ok = sha256(String(code).trim().toUpperCase()) === String(v.code_hash);
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    await client.query(
-      `UPDATE address_mail_verifications
-       SET attempt_count = attempt_count + 1, updated_at=now()
-       WHERE id=$1`,
-      [v.id]
-    );
-
     if (!ok) {
+      await client.query(
+        `UPDATE address_mail_verifications
+           SET attempt_count = attempt_count + 1, updated_at = now()
+         WHERE id = $1`,
+        [v.id]
+      );
       await client.query('COMMIT');
       return res.status(400).json({ error: 'invalid_code' });
     }
 
+    // Code correct → on ne touche pas attempt_count
     await client.query(
       `UPDATE address_mail_verifications
-       SET status='verified', verified_at=now(), updated_at=now()
+         SET status='verified', verified_at=now(), updated_at=now()
        WHERE id=$1`,
       [v.id]
     );
+
     await client.query(
-      `UPDATE users SET address_verified=true, address_verified_at=now()
-       WHERE id=$1`,
+      `UPDATE users
+          SET address_verified=true, address_verified_at=now()
+        WHERE id=$1`,
       [userId]
     );
 
@@ -659,11 +673,13 @@ export async function verifyAddressMail(req: Request, res: Response) {
   }
 
   await logAudit(userId, 'address_mail_verified', req);
-  return res.json({ ok: true });
+  // ✅ shape attendu par le frontend
+  return res.json({ status: 'verified' });
 }
 
+
 export async function startAddressMail(req: Request, res: Response) {
-  const userId = req.user?.id;
+  const userId = (req as any).user?.id; // assure-toi que verifyToken met req.user
   const { address_line1, address_line2, city, department, postal_code, country } = req.body;
 
   if (!userId) return res.status(401).json({ error: 'unauthorized' });
@@ -683,26 +699,45 @@ export async function startAddressMail(req: Request, res: Response) {
   const code = makeCode(6);
   const code_hash = sha256(code);
 
+  // Envoi réel/simulation de lettre
   const { pdfUrl, providerId } = await sendLetter({
     to: { address_line1, address_line2, city, department, postal_code, country },
     code,
     user: { id: userId }
   });
 
+  // expire dans 90 jours
   const ins = await pool.query(
     `INSERT INTO address_mail_verifications
       (user_id, address_line1, address_line2, city, department, postal_code, country,
        code_hash, code_length, status, provider, provider_tracking_id, letter_url,
        mailed_at, expires_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'mailed',$10,$11,$12, now(), now()+ interval '90 days')
-     RETURNING id`,
-    [userId, address_line1, address_line2 || null, city, department || null, postal_code || null, country,
-     code_hash, 6, providerId, pdfUrl, pdfUrl]
+     RETURNING id, expires_at`,
+    [
+      userId,
+      address_line1,
+      address_line2 || null,
+      city,
+      department || null,
+      postal_code || null,
+      country,
+      code_hash,
+      6,
+      /* provider */ providerId,
+      /* provider_tracking_id */ providerId,
+      /* letter_url */ pdfUrl
+    ]
   );
 
   await logAudit(userId, 'address_mail_started', req);
-  return res.json({ status: 'mailed', requestId: ins.rows[0].id });
+  return res.json({
+    status: 'mailed',
+    requestId: ins.rows[0].id,
+    expires_at: ins.rows[0].expires_at // ✅ nécessaire pour ton compte à rebours
+  });
 }
+
 
 export async function decideKyc(req: Request, res: Response) {
   const adminId = req.admin?.id;

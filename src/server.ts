@@ -19,14 +19,25 @@ import businessAdminRoutes from './routes/businessAdminRoutes';
 import authorizationRoutes from './routes/authorizationRoutes';
 import webhookRoutes from './routes/webhookRoutes';
 import pool from './config/db'; // Connexion test DB
+import kycRoutes from './routes/kyc';
+// app.ts / server.ts
+
+
+ // 👈 prefix /kyc
 
 const app = express();
 const PORT = process.env.PORT || 4000;
 
 // 🌍 Middlewares globaux
-app.use(cors());
+app.use(cors({
+  origin: '*',
+  methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
+  allowedHeaders: ['Content-Type','Authorization'],
+}));
+app.options('*', cors());
 app.use(express.json());
 
+app.use('/api/kyc', kycRoutes);  
 // 📦 Routes API
 app.use('/api/ip', ipRoutes);
 app.use('/api/auth', authRoutes);
