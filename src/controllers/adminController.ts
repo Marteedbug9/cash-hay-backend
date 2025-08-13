@@ -4,6 +4,7 @@ import stripe from '../config/stripe';
 import { sha256, makeCode,sha256Hex, normalizeOtp  } from '../utils/security';
 import { logAudit } from '../services/audit';
 import { sendLetter } from '../services/addressMail';
+import { addressFingerprint } from '../utils/address';
 import { createMarqetaCardholder, createVirtualCard,activatePhysicalCard,getCardShippingInfo,listCardProducts } from '../webhooks/marqetaService';
 // src/controllers/adminController.ts
 import * as marqetaService from '../webhooks/marqetaService';
@@ -679,71 +680,84 @@ export async function verifyAddressMail(req: Request, res: Response) {
 
 
 export async function startAddressMail(req: Request, res: Response) {
+  const userId = (req as any).user?.id;
+  if (!userId) return res.status(401).json({ error: 'unauthorized' });
+
+  // ---- lecture + normalisation ----
+  const body = (req.body || {}) as {
+    address_line1?: string | null;
+    address_line2?: string | null;
+    city?: string | null;
+    department?: string | null;
+    postal_code?: string | null;
+    country?: string | null;
+  };
+
+  const addressLine1: string = (body.address_line1 ?? '').trim();
+  const cityNorm: string     = (body.city ?? '').trim();
+  const countryNorm: string  = (body.country ?? '').trim().toUpperCase();
+
+  // optionnels pour provider: string | undefined
+  const addressLine2Undef: string | undefined = body.address_line2?.trim() || undefined;
+  const departmentUndef:   string | undefined = body.department?.trim()   || undefined;
+  const postalCodeUndef:   string | undefined = body.postal_code?.trim()  || undefined;
+
+  if (!addressLine1 || !cityNorm || !countryNorm) {
+    return res.status(400).json({ error: 'invalid_address' });
+  }
+  if (countryNorm.length < 2 || countryNorm.length > 3) {
+    return res.status(400).json({ error: 'invalid_country' });
+  }
+
+  const client = await pool.connect();
   try {
-    const userId = (req as any).user?.id;
-    if (!userId) return res.status(401).json({ error: 'unauthorized' });
+    await client.query('BEGIN');
 
-    // ---- lecture + normalisation ----
-    const body = (req.body || {}) as {
-      address_line1?: string | null;
-      address_line2?: string | null;
-      city?: string | null;
-      department?: string | null;
-      postal_code?: string | null;
-      country?: string | null;
-    };
+    // 1) Expirer les anciennes actives dépassées
+    await client.query(
+      `UPDATE address_mail_verifications
+          SET status='expired', updated_at=now()
+        WHERE user_id=$1
+          AND status IN ('pending','mailed','delivered')
+          AND expires_at <= now()`,
+      [userId]
+    );
 
-    const addressLine1: string = (body.address_line1 ?? '').trim();
-    const cityNorm: string     = (body.city ?? '').trim();
-    const countryNorm: string  = (body.country ?? '').trim().toUpperCase();
-
-    // optionnels pour le provider: string | undefined (≠ null)
-    const addressLine2Undef: string | undefined = body.address_line2?.trim() || undefined;
-    const departmentUndef:   string | undefined = body.department?.trim()   || undefined;
-    const postalCodeUndef:   string | undefined = body.postal_code?.trim()  || undefined;
-
-    if (!addressLine1 || !cityNorm || !countryNorm) {
-      return res.status(400).json({ error: 'invalid_address' });
-    }
-    if (countryNorm.length < 2 || countryNorm.length > 3) {
-      return res.status(400).json({ error: 'invalid_country' });
-    }
-
-    // ---- empêcher multiples demandes actives ----
-    const active = await pool.query(
+    // 2) Vérifier s'il reste une active (non échue)
+    const active = await client.query(
       `SELECT id
          FROM address_mail_verifications
         WHERE user_id=$1
           AND status IN ('pending','mailed','delivered')
-          AND expires_at > now()
         ORDER BY created_at DESC
         LIMIT 1`,
       [userId]
     );
     if (active.rowCount) {
+      await client.query('ROLLBACK');
       return res.status(409).json({ error: 'already_active_request' });
     }
 
-    // ---- code & hash ----
+    // 3) Générer code & hash
     const code = makeCode(6);
     const code_hash = sha256Hex(normalizeOtp(code));
 
-    // ---- envoi provider (attend string | undefined) ----
+    // 4) Appel provider
     const { pdfUrl, providerId } = await sendLetter({
       to: {
         address_line1: addressLine1,
-        address_line2: addressLine2Undef,     // ✅ undefined, pas null
+        address_line2: addressLine2Undef,
         city:          cityNorm,
-        department:    departmentUndef,       // ✅
-        postal_code:   postalCodeUndef,       // ✅
+        department:    departmentUndef,
+        postal_code:   postalCodeUndef,
         country:       countryNorm,
       },
       code,
       user: { id: userId },
     });
 
-    // ---- insert DB (convertit undefined -> NULL) ----
-    const ins = await pool.query(
+    // 5) Insert (expire à +90 jours)
+    const ins = await client.query(
       `INSERT INTO address_mail_verifications (
          user_id, address_line1, address_line2, city, department, postal_code, country,
          code_hash, code_length, status, provider, provider_tracking_id, letter_url,
@@ -759,7 +773,7 @@ export async function startAddressMail(req: Request, res: Response) {
       [
         userId,
         addressLine1,
-        addressLine2Undef ?? null,   // 👈 NULL pour SQL
+        addressLine2Undef ?? null,
         cityNorm,
         departmentUndef ?? null,
         postalCodeUndef ?? null,
@@ -772,20 +786,29 @@ export async function startAddressMail(req: Request, res: Response) {
       ]
     );
 
-    // audit (best-effort)
+    await client.query('COMMIT');
+
+    // audit best-effort
     try { await logAudit(userId, 'address_mail_started', req, { city: cityNorm, country: countryNorm }); } catch {}
 
-    // ✅ shape exact attendu par le front
     return res.status(201).json({
       status: 'mailed',
       requestId: ins.rows[0].id,
       expires_at: ins.rows[0].expires_at,
     });
   } catch (e: any) {
+    await client.query('ROLLBACK');
+    // Collision d'unicité si course (avec l'index unique partiel)
+    if (e?.code === '23505') {
+      return res.status(409).json({ error: 'already_active_request' });
+    }
     console.error('❌ startAddressMail error:', e?.message || e);
     return res.status(500).json({ error: 'server_error' });
+  } finally {
+    client.release();
   }
 }
+
 
 
 
@@ -855,32 +878,64 @@ export async function decideKyc(req: Request, res: Response) {
   }
 }
 
-export async function statusAddressMail(req: any, res: any) {
-  const userId = req.user?.id;
-  if (!userId) return res.status(401).json({ error: 'unauthorized' });
+export async function statusAddressMail(req: Request, res: Response) {
+  try {
+    const userId = (req as any).user?.id;
+    if (!userId) return res.status(401).json({ error: 'unauthorized' });
 
-  const { rows } = await pool.query(
-    `SELECT status, expires_at, attempt_count, max_attempts
-       FROM address_mail_verifications
-      WHERE user_id = $1
-        AND status IN ('mailed','delivered','pending')
-        AND expires_at > now()
-      ORDER BY created_at DESC
-      LIMIT 1`,
-    [userId]
-  );
+    // On prend la DERNIÈRE demande (même si expirée) pour pouvoir la marquer "expired"
+    const { rows } = await pool.query(
+      `SELECT id, status, expires_at, attempt_count, max_attempts,
+              address_line1, address_line2, city, department, postal_code, country
+         FROM address_mail_verifications
+        WHERE user_id = $1
+        ORDER BY created_at DESC
+        LIMIT 1`,
+      [userId]
+    );
 
-  if (rows.length === 0) {
-    // Aucun envoi actif : l’app peut proposer de relancer un courrier
-    return res.status(404).json({ error: 'no_active_request' });
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'no_active_request' });
+    }
+
+    const v = rows[0];
+    const isExpired = v.expires_at && new Date(v.expires_at).getTime() <= Date.now();
+
+    // Si expirée et pas déjà finalisée → on met à jour en DB
+    if (isExpired && !['expired', 'verified', 'returned', 'canceled'].includes(v.status)) {
+      await pool.query(
+        `UPDATE address_mail_verifications
+            SET status='expired', updated_at=now()
+          WHERE id=$1`,
+        [v.id]
+      );
+      v.status = 'expired';
+    }
+
+    // Si la demande est finalisée/absente ET pas active → 404 pour que le front propose un nouvel envoi
+    if (['expired', 'verified', 'returned', 'canceled'].includes(v.status)) {
+      // tu peux choisir de renvoyer 200 avec status final si tu préfères:
+      // return res.json({ requestId: v.id, status: v.status, ... });
+      return res.status(404).json({ error: 'no_active_request' });
+    }
+
+    // OK → on renvoie l’état courant + adresse + requestId
+    return res.json({
+      requestId: v.id,
+      status: v.status as
+        'pending' | 'mailed' | 'delivered' | 'verified' | 'returned' | 'expired' | 'canceled',
+      expires_at: v.expires_at,
+      attempt_count: v.attempt_count,
+      max_attempts: v.max_attempts,
+      address_line1: v.address_line1,
+      address_line2: v.address_line2,
+      city: v.city,
+      department: v.department,
+      postal_code: v.postal_code,
+      country: v.country,
+    });
+  } catch (e: any) {
+    console.error('statusAddressMail error:', e?.message || e);
+    return res.status(500).json({ error: 'server_error' });
   }
-
-  const r = rows[0];
-  return res.json({
-    status: r.status as
-      'pending' | 'mailed' | 'delivered' | 'verified' | 'returned' | 'expired' | 'canceled',
-    expires_at: r.expires_at,
-    attempt_count: r.attempt_count,
-    max_attempts: r.max_attempts,
-  });
 }
