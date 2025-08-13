@@ -608,22 +608,20 @@ export async function verifyAddressMail(req: Request, res: Response) {
   const { code } = req.body;
 
   if (!userId) return res.status(401).json({ error: 'unauthorized' });
-  if (!code) return res.status(400).json({ error: 'code_required' });
+  if (!code)   return res.status(400).json({ error: 'code_required' });
 
   const { rows } = await pool.query(
-    `SELECT id, code_hash, attempt_count, max_attempts
-       , expires_at, status
-     FROM address_mail_verifications
-     WHERE user_id=$1
-       AND status IN ('mailed','delivered')
-       AND expires_at > now()
-     ORDER BY created_at DESC
-     LIMIT 1`,
+    `SELECT id, code_hash, attempt_count, max_attempts, expires_at, status
+       FROM address_mail_verifications
+      WHERE user_id=$1
+        AND status IN ('mailed','delivered')
+        AND expires_at > now()
+      ORDER BY created_at DESC
+      LIMIT 1`,
     [userId]
   );
 
   if (rows.length === 0) {
-    // L’app gère 'no_active_request' → elle repasse à l’étape 1
     return res.status(400).json({ error: 'no_active_request' });
   }
 
@@ -633,7 +631,8 @@ export async function verifyAddressMail(req: Request, res: Response) {
     return res.status(429).json({ error: 'too_many_attempts' });
   }
 
-  const ok = sha256(String(code).trim().toUpperCase()) === String(v.code_hash);
+  // ✅ même algo que dans startAddressMail
+  const ok = sha256Hex(normalizeOtp(String(code))) === String(v.code_hash);
 
   const client = await pool.connect();
   try {
@@ -642,19 +641,18 @@ export async function verifyAddressMail(req: Request, res: Response) {
     if (!ok) {
       await client.query(
         `UPDATE address_mail_verifications
-           SET attempt_count = attempt_count + 1, updated_at = now()
-         WHERE id = $1`,
+            SET attempt_count = attempt_count + 1, updated_at = now()
+          WHERE id = $1`,
         [v.id]
       );
       await client.query('COMMIT');
       return res.status(400).json({ error: 'invalid_code' });
     }
 
-    // Code correct → on ne touche pas attempt_count
     await client.query(
       `UPDATE address_mail_verifications
-         SET status='verified', verified_at=now(), updated_at=now()
-       WHERE id=$1`,
+          SET status='verified', verified_at=now(), updated_at=now()
+        WHERE id=$1`,
       [v.id]
     );
 
@@ -673,10 +671,10 @@ export async function verifyAddressMail(req: Request, res: Response) {
     client.release();
   }
 
-  await logAudit(userId, 'address_mail_verified', req);
-  // ✅ shape attendu par le frontend
+  try { await logAudit(userId, 'address_mail_verified', req); } catch {}
   return res.json({ status: 'verified' });
 }
+
 
 
 export async function startAddressMail(req: Request, res: Response) {
@@ -709,9 +707,33 @@ export async function startAddressMail(req: Request, res: Response) {
     return res.status(400).json({ error: 'invalid_country' });
   }
 
+  // Empreinte normalisée de l’adresse (analytics/contrôles doux)
+  const address_fp = addressFingerprint({
+    address_line1: addressLine1,
+    address_line2: addressLine2Undef ?? null,
+    city:          cityNorm,
+    department:    departmentUndef ?? null,
+    postal_code:   postalCodeUndef ?? null,
+    country:       countryNorm,
+  });
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    // 0) Bloquer si déjà vérifié (sécurité côté API, en plus du /init front)
+    const uRes = await client.query(
+      `SELECT address_verified FROM users WHERE id=$1`,
+      [userId]
+    );
+    if (uRes.rowCount === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'user_not_found' });
+    }
+    if (uRes.rows[0].address_verified) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'already_verified' });
+    }
 
     // 1) Expirer les anciennes actives dépassées
     await client.query(
@@ -756,16 +778,18 @@ export async function startAddressMail(req: Request, res: Response) {
       user: { id: userId },
     });
 
-    // 5) Insert (expire à +90 jours)
+    // 5) Insert (expire à +90 jours) — avec address_fp
     const ins = await client.query(
       `INSERT INTO address_mail_verifications (
          user_id, address_line1, address_line2, city, department, postal_code, country,
+         address_fp,
          code_hash, code_length, status, provider, provider_tracking_id, letter_url,
          mailed_at, expires_at, created_at, updated_at,
          attempt_count, max_attempts
        ) VALUES (
          $1,$2,$3,$4,$5,$6,$7,
-         $8,$9,'mailed',$10,$11,$12,
+         $8,
+         $9,$10,'mailed',$11,$12,$13,
          now(), now() + interval '90 days', now(), now(),
          0, 5
        )
@@ -778,27 +802,39 @@ export async function startAddressMail(req: Request, res: Response) {
         departmentUndef ?? null,
         postalCodeUndef ?? null,
         countryNorm,
-        code_hash,
-        6,
-        providerId,
-        providerId,
-        pdfUrl,
+        address_fp,     // $8
+        code_hash,      // $9
+        6,              // $10
+        providerId,     // $11
+        providerId,     // $12 (tracking id, selon ton provider)
+        pdfUrl,         // $13
       ]
     );
 
     await client.query('COMMIT');
 
     // audit best-effort
-    try { await logAudit(userId, 'address_mail_started', req, { city: cityNorm, country: countryNorm }); } catch {}
+    try {
+      await logAudit(userId, 'address_mail_started', req, {
+        city: cityNorm, country: countryNorm,
+      });
+    } catch {}
 
+    // ➜ On renvoie aussi l’adresse utilisée pour la montrer directement en étape 2
     return res.status(201).json({
       status: 'mailed',
       requestId: ins.rows[0].id,
       expires_at: ins.rows[0].expires_at,
+      address_line1: addressLine1,
+      address_line2: addressLine2Undef ?? null,
+      city:          cityNorm,
+      department:    departmentUndef ?? null,
+      postal_code:   postalCodeUndef ?? null,
+      country:       countryNorm,
     });
   } catch (e: any) {
     await client.query('ROLLBACK');
-    // Collision d'unicité si course (avec l'index unique partiel)
+    // Collision d'unicité (course) avec l’index unique partiel -> on renvoie la même sémantique
     if (e?.code === '23505') {
       return res.status(409).json({ error: 'already_active_request' });
     }
@@ -808,8 +844,6 @@ export async function startAddressMail(req: Request, res: Response) {
     client.release();
   }
 }
-
-
 
 
 export async function decideKyc(req: Request, res: Response) {
@@ -944,14 +978,14 @@ export async function initAddressMail(req: Request, res: Response) {
   const userId = (req as any).user?.id;
   if (!userId) return res.status(401).json({ error: 'unauthorized' });
 
-  // 1) Récup info user (pour pré-remplir si besoin)
+  // 1) Profil
   const uRes = await pool.query(
     `SELECT address_verified, address, city, department, zip_code, country
        FROM users
       WHERE id = $1`,
     [userId]
   );
-  if (uRes.rowCount === 0) return res.status(404).json({ error: 'user_not_found' });
+  if (uRes.rows.length === 0) return res.status(404).json({ error: 'user_not_found' });
 
   const u = uRes.rows[0] as {
     address_verified: boolean;
@@ -962,10 +996,11 @@ export async function initAddressMail(req: Request, res: Response) {
     country: string | null;
   };
 
-  // 2) Dernière vérif courrier
+  // 2) Dernière demande (active ou pas)
   const vRes = await pool.query(
     `SELECT id, status, expires_at, attempt_count, max_attempts,
-            address_line1, address_line2, city, department, postal_code, country, verified_at, created_at
+            address_line1, address_line2, city, department, postal_code, country,
+            verified_at, created_at
        FROM address_mail_verifications
       WHERE user_id = $1
       ORDER BY created_at DESC
@@ -974,11 +1009,24 @@ export async function initAddressMail(req: Request, res: Response) {
   );
 
   let active = false;
-  let current: any = null;
+  let current: null | {
+    requestId: string;
+    status: 'pending' | 'mailed' | 'delivered';
+    expires_at: string | Date;
+    attempt_count: number;
+    max_attempts: number;
+    address_line1: string | null;
+    address_line2: string | null;
+    city: string | null;
+    department: string | null;
+    postal_code: string | null;
+    country: string | null;
+  } = null;
 
-  if (vRes.rows.length === 0) {
+  if (vRes.rows.length > 0) {
     const v = vRes.rows[0];
     const exp = v.expires_at ? new Date(v.expires_at) : null;
+
     active =
       (v.status === 'pending' || v.status === 'mailed' || v.status === 'delivered') &&
       !!exp && exp.getTime() > Date.now();
@@ -986,7 +1034,7 @@ export async function initAddressMail(req: Request, res: Response) {
     if (active) {
       current = {
         requestId: v.id,
-        status: v.status as 'pending' | 'mailed' | 'delivered',
+        status: v.status,
         expires_at: v.expires_at,
         attempt_count: v.attempt_count,
         max_attempts: v.max_attempts,
@@ -1001,13 +1049,9 @@ export async function initAddressMail(req: Request, res: Response) {
   }
 
   // 3) Déjà vérifié ?
-  // On se fie au flag user OU à la dernière ligne status=verified
-  const isVerified =
-  Boolean(u.address_verified) ||
-  (vRes.rows[0]?.status === 'verified');
+  const isVerified = Boolean(u.address_verified) || (vRes.rows[0]?.status === 'verified');
 
-
-  // 4) Pré-remplissage (si pas de current actif, on propose l’adresse du profil)
+  // 4) Pré-remplissage
   const prefill = current
     ? {
         address_line1: current.address_line1,
@@ -1029,7 +1073,7 @@ export async function initAddressMail(req: Request, res: Response) {
   return res.json({
     address_verified: isVerified,
     active,
-    current,   // null si pas d’envoi actif
-    prefill,   // pour remplir l’étape 1 si besoin
+    current,  // null si pas d’envoi actif
+    prefill,
   });
 }
