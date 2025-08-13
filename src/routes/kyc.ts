@@ -1,11 +1,9 @@
-// routes/kyc.ts
 import { Router } from 'express';
-import { startAddressMail, verifyAddressMail } from '../controllers/adminController'; // ou authController
-import { verifyToken, verifyAdmin } from '../middlewares/verifyToken';
+import { startAddressMail, verifyAddressMail, statusAddressMail } from '../controllers/adminController';
+import { verifyToken } from '../middlewares/verifyToken';
 
 const router = Router();
 router.post('/address-mail/start', verifyToken, startAddressMail);
 router.post('/address-mail/verify', verifyToken, verifyAddressMail);
+router.get('/address-mail/status', verifyToken, statusAddressMail); // 👈 nouveau
 export default router;
-
-

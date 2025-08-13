@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import pool from '../config/db';
 import stripe from '../config/stripe';
-import { sha256, makeCode } from '../utils/security';
+import { sha256, makeCode,sha256Hex, normalizeOtp  } from '../utils/security';
 import { logAudit } from '../services/audit';
 import { sendLetter } from '../services/addressMail';
 import { createMarqetaCardholder, createVirtualCard,activatePhysicalCard,getCardShippingInfo,listCardProducts } from '../webhooks/marqetaService';
@@ -679,64 +679,114 @@ export async function verifyAddressMail(req: Request, res: Response) {
 
 
 export async function startAddressMail(req: Request, res: Response) {
-  const userId = (req as any).user?.id; // assure-toi que verifyToken met req.user
-  const { address_line1, address_line2, city, department, postal_code, country } = req.body;
+  try {
+    const userId = (req as any).user?.id;
+    if (!userId) return res.status(401).json({ error: 'unauthorized' });
 
-  if (!userId) return res.status(401).json({ error: 'unauthorized' });
-  if (!address_line1 || !city || !country) {
-    return res.status(400).json({ error: 'invalid_address' });
+    // ---- lecture + normalisation ----
+    const body = (req.body || {}) as {
+      address_line1?: string | null;
+      address_line2?: string | null;
+      city?: string | null;
+      department?: string | null;
+      postal_code?: string | null;
+      country?: string | null;
+    };
+
+    const addressLine1: string = (body.address_line1 ?? '').trim();
+    const cityNorm: string     = (body.city ?? '').trim();
+    const countryNorm: string  = (body.country ?? '').trim().toUpperCase();
+
+    // optionnels pour le provider: string | undefined (≠ null)
+    const addressLine2Undef: string | undefined = body.address_line2?.trim() || undefined;
+    const departmentUndef:   string | undefined = body.department?.trim()   || undefined;
+    const postalCodeUndef:   string | undefined = body.postal_code?.trim()  || undefined;
+
+    if (!addressLine1 || !cityNorm || !countryNorm) {
+      return res.status(400).json({ error: 'invalid_address' });
+    }
+    if (countryNorm.length < 2 || countryNorm.length > 3) {
+      return res.status(400).json({ error: 'invalid_country' });
+    }
+
+    // ---- empêcher multiples demandes actives ----
+    const active = await pool.query(
+      `SELECT id
+         FROM address_mail_verifications
+        WHERE user_id=$1
+          AND status IN ('pending','mailed','delivered')
+          AND expires_at > now()
+        ORDER BY created_at DESC
+        LIMIT 1`,
+      [userId]
+    );
+    if (active.rowCount) {
+      return res.status(409).json({ error: 'already_active_request' });
+    }
+
+    // ---- code & hash ----
+    const code = makeCode(6);
+    const code_hash = sha256Hex(normalizeOtp(code));
+
+    // ---- envoi provider (attend string | undefined) ----
+    const { pdfUrl, providerId } = await sendLetter({
+      to: {
+        address_line1: addressLine1,
+        address_line2: addressLine2Undef,     // ✅ undefined, pas null
+        city:          cityNorm,
+        department:    departmentUndef,       // ✅
+        postal_code:   postalCodeUndef,       // ✅
+        country:       countryNorm,
+      },
+      code,
+      user: { id: userId },
+    });
+
+    // ---- insert DB (convertit undefined -> NULL) ----
+    const ins = await pool.query(
+      `INSERT INTO address_mail_verifications (
+         user_id, address_line1, address_line2, city, department, postal_code, country,
+         code_hash, code_length, status, provider, provider_tracking_id, letter_url,
+         mailed_at, expires_at, created_at, updated_at,
+         attempt_count, max_attempts
+       ) VALUES (
+         $1,$2,$3,$4,$5,$6,$7,
+         $8,$9,'mailed',$10,$11,$12,
+         now(), now() + interval '90 days', now(), now(),
+         0, 5
+       )
+       RETURNING id, expires_at`,
+      [
+        userId,
+        addressLine1,
+        addressLine2Undef ?? null,   // 👈 NULL pour SQL
+        cityNorm,
+        departmentUndef ?? null,
+        postalCodeUndef ?? null,
+        countryNorm,
+        code_hash,
+        6,
+        providerId,
+        providerId,
+        pdfUrl,
+      ]
+    );
+
+    // audit (best-effort)
+    try { await logAudit(userId, 'address_mail_started', req, { city: cityNorm, country: countryNorm }); } catch {}
+
+    // ✅ shape exact attendu par le front
+    return res.status(201).json({
+      status: 'mailed',
+      requestId: ins.rows[0].id,
+      expires_at: ins.rows[0].expires_at,
+    });
+  } catch (e: any) {
+    console.error('❌ startAddressMail error:', e?.message || e);
+    return res.status(500).json({ error: 'server_error' });
   }
-
-  // Empêcher multiples demandes actives non expirées
-  const active = await pool.query(
-    `SELECT id FROM address_mail_verifications
-     WHERE user_id=$1 AND status IN ('mailed','delivered') AND expires_at > now()
-     ORDER BY created_at DESC LIMIT 1`,
-    [userId]
-  );
-  if (active.rowCount) return res.status(409).json({ error: 'already_active_request' });
-
-  const code = makeCode(6);
-  const code_hash = sha256(code);
-
-  // Envoi réel/simulation de lettre
-  const { pdfUrl, providerId } = await sendLetter({
-    to: { address_line1, address_line2, city, department, postal_code, country },
-    code,
-    user: { id: userId }
-  });
-
-  // expire dans 90 jours
-  const ins = await pool.query(
-    `INSERT INTO address_mail_verifications
-      (user_id, address_line1, address_line2, city, department, postal_code, country,
-       code_hash, code_length, status, provider, provider_tracking_id, letter_url,
-       mailed_at, expires_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'mailed',$10,$11,$12, now(), now()+ interval '90 days')
-     RETURNING id, expires_at`,
-    [
-      userId,
-      address_line1,
-      address_line2 || null,
-      city,
-      department || null,
-      postal_code || null,
-      country,
-      code_hash,
-      6,
-      /* provider */ providerId,
-      /* provider_tracking_id */ providerId,
-      /* letter_url */ pdfUrl
-    ]
-  );
-
-  await logAudit(userId, 'address_mail_started', req);
-  return res.json({
-    status: 'mailed',
-    requestId: ins.rows[0].id,
-    expires_at: ins.rows[0].expires_at // ✅ nécessaire pour ton compte à rebours
-  });
 }
+
 
 
 export async function decideKyc(req: Request, res: Response) {
@@ -803,4 +853,34 @@ export async function decideKyc(req: Request, res: Response) {
   } finally {
     client.release();
   }
+}
+
+export async function statusAddressMail(req: any, res: any) {
+  const userId = req.user?.id;
+  if (!userId) return res.status(401).json({ error: 'unauthorized' });
+
+  const { rows } = await pool.query(
+    `SELECT status, expires_at, attempt_count, max_attempts
+       FROM address_mail_verifications
+      WHERE user_id = $1
+        AND status IN ('mailed','delivered','pending')
+        AND expires_at > now()
+      ORDER BY created_at DESC
+      LIMIT 1`,
+    [userId]
+  );
+
+  if (rows.length === 0) {
+    // Aucun envoi actif : l’app peut proposer de relancer un courrier
+    return res.status(404).json({ error: 'no_active_request' });
+  }
+
+  const r = rows[0];
+  return res.json({
+    status: r.status as
+      'pending' | 'mailed' | 'delivered' | 'verified' | 'returned' | 'expired' | 'canceled',
+    expires_at: r.expires_at,
+    attempt_count: r.attempt_count,
+    max_attempts: r.max_attempts,
+  });
 }
