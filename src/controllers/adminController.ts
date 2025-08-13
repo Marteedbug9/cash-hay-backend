@@ -939,3 +939,97 @@ export async function statusAddressMail(req: Request, res: Response) {
     return res.status(500).json({ error: 'server_error' });
   }
 }
+
+export async function initAddressMail(req: Request, res: Response) {
+  const userId = (req as any).user?.id;
+  if (!userId) return res.status(401).json({ error: 'unauthorized' });
+
+  // 1) Récup info user (pour pré-remplir si besoin)
+  const uRes = await pool.query(
+    `SELECT address_verified, address, city, department, zip_code, country
+       FROM users
+      WHERE id = $1`,
+    [userId]
+  );
+  if (uRes.rowCount === 0) return res.status(404).json({ error: 'user_not_found' });
+
+  const u = uRes.rows[0] as {
+    address_verified: boolean;
+    address: string | null;
+    city: string | null;
+    department: string | null;
+    zip_code: string | null;
+    country: string | null;
+  };
+
+  // 2) Dernière vérif courrier
+  const vRes = await pool.query(
+    `SELECT id, status, expires_at, attempt_count, max_attempts,
+            address_line1, address_line2, city, department, postal_code, country, verified_at, created_at
+       FROM address_mail_verifications
+      WHERE user_id = $1
+      ORDER BY created_at DESC
+      LIMIT 1`,
+    [userId]
+  );
+
+  let active = false;
+  let current: any = null;
+
+  if (vRes.rows.length === 0) {
+    const v = vRes.rows[0];
+    const exp = v.expires_at ? new Date(v.expires_at) : null;
+    active =
+      (v.status === 'pending' || v.status === 'mailed' || v.status === 'delivered') &&
+      !!exp && exp.getTime() > Date.now();
+
+    if (active) {
+      current = {
+        requestId: v.id,
+        status: v.status as 'pending' | 'mailed' | 'delivered',
+        expires_at: v.expires_at,
+        attempt_count: v.attempt_count,
+        max_attempts: v.max_attempts,
+        address_line1: v.address_line1,
+        address_line2: v.address_line2,
+        city: v.city,
+        department: v.department,
+        postal_code: v.postal_code,
+        country: v.country,
+      };
+    }
+  }
+
+  // 3) Déjà vérifié ?
+  // On se fie au flag user OU à la dernière ligne status=verified
+  const isVerified =
+  Boolean(u.address_verified) ||
+  (vRes.rows[0]?.status === 'verified');
+
+
+  // 4) Pré-remplissage (si pas de current actif, on propose l’adresse du profil)
+  const prefill = current
+    ? {
+        address_line1: current.address_line1,
+        address_line2: current.address_line2,
+        city: current.city,
+        department: current.department,
+        postal_code: current.postal_code,
+        country: current.country,
+      }
+    : {
+        address_line1: u.address ?? '',
+        address_line2: null as string | null,
+        city: u.city ?? '',
+        department: u.department ?? null,
+        postal_code: u.zip_code ?? null,
+        country: u.country ?? 'HT',
+      };
+
+  return res.json({
+    address_verified: isVerified,
+    active,
+    current,   // null si pas d’envoi actif
+    prefill,   // pour remplir l’étape 1 si besoin
+  });
+}
