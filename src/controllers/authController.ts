@@ -12,6 +12,9 @@ import streamifier from 'streamifier';
 import { CardStatus, CardType } from '../constants/card';
 import { encrypt, encryptNullable, decryptNullable, blindIndexEmail, blindIndexPhone } from '../utils/crypto';
 import type { File as MulterFile } from 'multer';
+import { sha256Hex } from '../utils/security';
+
+
 
 // imports: RETIRE
 import { File } from 'multer';            // inutile: tu utilises Express.Multer.File
@@ -46,8 +49,10 @@ function getClientIp(req: Request): string {
 // ➤ Enregistrement
 export const register = async (req: Request, res: Response) => {
   console.log('🟡 Données reçues:', req.body);
+
   const {
-    first_name, last_name, gender, address, city, department, zip_code = '',
+    first_name, last_name, gender,
+    address, city, department, zip_code = '',
     country, email, phone,
     birth_date, birth_country,
     id_type, id_number, id_issue_date, id_expiry_date,
@@ -55,34 +60,43 @@ export const register = async (req: Request, res: Response) => {
     accept_terms,
   } = req.body;
 
-  // validations (inchangé)
+  // --- validations rapides ---
   const usernameRegex = /^[a-zA-Z0-9@#%&._-]{3,30}$/;
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  if (!username || !usernameRegex.test(username)) {
-    return res.status(400).json({ error: "Nom d’utilisateur invalide..." });
-  }
-  if (!email || !emailRegex.test(email)) return res.status(400).json({ error: 'Email invalide.' });
-  if (accept_terms !== true) return res.status(400).json({ error: 'Vous devez accepter les conditions.' });
-  if (!password || String(password).length < 8) {
+
+  if (!username || !usernameRegex.test(username))
+    return res.status(400).json({ error: "Nom d’utilisateur invalide." });
+
+  if (!email || !emailRegex.test(email))
+    return res.status(400).json({ error: 'Email invalide.' });
+
+  if (accept_terms !== true)
+    return res.status(400).json({ error: 'Vous devez accepter les conditions.' });
+
+  if (!password || String(password).length < 8)
     return res.status(400).json({ error: 'Mot de passe trop court (min. 8 caractères).' });
-  }
-  const required = { first_name, last_name, gender, address, city, department, country,
-    phone, birth_date, birth_country, id_type, id_number, id_issue_date, id_expiry_date };
+
+  const required = {
+    first_name, last_name, gender, address, city, department, country,
+    phone, birth_date, birth_country, id_type, id_number, id_issue_date, id_expiry_date,
+  };
   for (const [k, v] of Object.entries(required)) {
     if (v == null || v === '') return res.status(400).json({ error: `Le champ "${k}" est requis.` });
   }
 
   const client = await pool.connect();
   try {
-    // 🔎 Vérif doublons via bidx
+    // 🔒 préparer chiffrage / index aveugle
     const emailBidx = blindIndexEmail(email);
     const phoneBidx = blindIndexPhone(phone);
+
+    // doublons via bidx + username
     const dupe = await client.query(
-      'SELECT 1 FROM users WHERE email_bidx = $1 OR username = $2 LIMIT 1',
-      [emailBidx, username]
+      `SELECT 1 FROM users WHERE email_bidx = $1 OR phone_bidx = $2 OR username = $3 LIMIT 1`,
+      [emailBidx, phoneBidx, username]
     );
     if (dupe.rowCount && dupe.rowCount > 0) {
-      return res.status(400).json({ error: 'Email ou nom d’utilisateur déjà utilisé.' });
+      return res.status(400).json({ error: 'Email, téléphone ou nom d’utilisateur déjà utilisé.' });
     }
 
     await client.query('BEGIN');
@@ -91,69 +105,65 @@ export const register = async (req: Request, res: Response) => {
     const memberId = uuidv4();
     const cardId = uuidv4();
     const hashedPassword = await bcrypt.hash(String(password), 10);
-    const recoveryCode = uuidv4();
-    const ipAddress = getClientIp(req);
 
-    // 1) USERS — chiffré + bidx
+    // Pour récupération de compte : on stocke hash seulement
+    const recoveryCode = uuidv4();
+    const recoveryCodeHash = sha256Hex(recoveryCode);
+
+    // 1) USERS — plain + colonnes chiffrées/bidx
     await client.query(
       `
       INSERT INTO users (
         id,
         username,
-        first_name_enc, last_name_enc,
+        first_name, last_name,
         gender,
-        address_enc, city, department, zip_code, country,
-        email_enc, email_bidx,
-        phone_enc, phone_bidx,
-        birth_date, birth_country,
-        id_type, id_number, id_issue_date, id_expiry_date,
-        password_hash, role, accept_terms, recovery_code,
+        address, city, department, zip_code, country,
+        email,         email_enc,  email_bidx,
+        phone,         phone_enc,  phone_bidx,
+        birth_date,    birth_country,
+        id_type,       id_number,  id_number_enc, id_issue_date, id_expiry_date,
+        password_hash, role, accept_terms,
+        recovery_code, recovery_code_hash,
         created_at
       ) VALUES (
         $1,$2,
         $3,$4,
         $5,
         $6,$7,$8,$9,$10,
-        $11,$12,
-        $13,$14,
-        $15,$16,$17,
-        $18,$19,$20,$21,
-        $22,$23,$24,
+        $11,$12,$13,
+        $14,$15,$16,
+        $17,$18,
+        $19,$20,$21,$22,$23,
+        $24,$25,$26,
+        $27,$28,
         NOW()
       )
       `,
       [
         userId,
         username,
-        encrypt(first_name), encrypt(last_name),
+        first_name, last_name,
         gender,
-        encrypt(address), city, department, zip_code, country,
-        encrypt(email), emailBidx,
-        encrypt(phone), phoneBidx,
-        birth_date, birth_country, 
-        id_type, id_number, id_issue_date, id_expiry_date,
-        hashedPassword, 'user', true, recoveryCode,
+        address, city, department, zip_code, country,
+        email,      encrypt(email), emailBidx,
+        phone,      encrypt(phone), phoneBidx,
+        birth_date, birth_country,
+        id_type,    id_number,      encrypt(id_number), id_issue_date, id_expiry_date,
+        hashedPassword, 'user', true,
+        recoveryCode, recoveryCodeHash,
       ]
     );
 
     // 2) CARDS
+    const legacyNumber = '42' + Math.floor(100000000000 + Math.random() * 900000000000);
+    const now = new Date();
+    const expiry = `${String(now.getMonth() + 1).padStart(2, '0')}/${String(now.getFullYear() + 4).slice(2)}`;
+
     await client.query(
-      `
-      INSERT INTO cards (id, user_id, legacy_card_number, expiry_date, type, account_type, status, created_at)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
-      `,
-      [
-        cardId, userId,
-        // garde ta génération simple
-        '42' + Math.floor(100000000000 + Math.random() * 900000000000),
-        (() => {
-          const now = new Date();
-          const m = String(now.getMonth() + 1).padStart(2, '0');
-          const y = String(now.getFullYear() + 4).slice(2);
-          return `${m}/${y}`;
-        })(),
-        CardType.VIRTUAL, 'checking', CardStatus.PENDING,
-      ]
+      `INSERT INTO cards (id, user_id, legacy_card_number, expiry_date, type, account_type, status, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())`,
+      [cardId, userId, legacyNumber, expiry, 'virtual', 'checking', 'pending']
     );
 
     // 3) BALANCES
@@ -166,7 +176,8 @@ export const register = async (req: Request, res: Response) => {
       [memberId, userId, username]
     );
 
-    // 5) LOGIN_HISTORY
+    // 5) LOGIN HISTORY
+    const ipAddress = requestIp.getClientIp(req) || req.ip || '';
     await client.query(
       `INSERT INTO login_history (user_id, ip_address, created_at) VALUES ($1, $2, NOW())`,
       [userId, ipAddress]
@@ -174,37 +185,27 @@ export const register = async (req: Request, res: Response) => {
 
     await client.query('COMMIT');
 
-    // Notifications (après COMMIT)
+    // notifications post-commit (best-effort)
     try {
       await sendEmail({
         to: email,
         subject: 'Bienvenue sur Cash Hay',
-        html: `
-          <div style="font-family: Arial, sans-serif; color: #333; line-height: 1.6;">
-            <h2 style="color: #28a745;">Bienvenue sur Cash Hay, ${first_name} !</h2>
-            <img src="https://res.cloudinary.com/dmwcxkzs3/image/upload/v1755125913/ChatGPT_Image_Jul_27_2025_01_38_46_PM_qsxzai.png" alt="Cash Hay" style="max-width:200px;display:block;margin:10px auto;" />
-            <p>Transférez et recevez votre argent <strong>aussi rapide que l’éclair</strong> ⚡.</p>
-            <p>Votre argent sera <strong>sécurisé</strong> 🔒 et utilisable <strong>en ligne sans limite</strong>.</p>
-            <ol>
-              <li>Connectez-vous et faites votre <strong>vérification d’identité</strong>.</li>
-              <li>Recevez immédiatement votre <strong>carte de débit virtuelle</strong>.</li>
-              <li>Personnalisez votre <strong>carte physique</strong> selon vos préférences.</li>
-            </ol>
-          </div>
-        `,
+        text: `Bonjour ${first_name}, votre compte a été créé. Complétez la vérification d'identité pour activer votre carte.`
       });
-    } catch (e) { console.error('⚠️ Email de bienvenue non envoyé :', e); }
-
+    } catch (e) { console.error('⚠️ Email non envoyé :', e); }
     try {
-      await sendSMS(phone, `Bienvenue ${first_name} ! Vérifiez votre identité pour recevoir votre carte de débit virtuelle Cash Hay. ⚡`);
-    } catch (e) { console.error('⚠️ SMS de bienvenue non envoyé :', e); }
+      await sendSMS(phone, `Bienvenue ${first_name} ! Complétez votre vérification d’identité pour activer votre carte Cash Hay.`);
+    } catch (e) { console.error('⚠️ SMS non envoyé :', e); }
 
     return res.status(201).json({
-      user: { id: userId, email, first_name, last_name, username },
+      user: { id: userId, email, first_name, last_name, username }
     });
-  } catch (err:any) {
+  } catch (err: any) {
     try { await client.query('ROLLBACK'); } catch {}
-    if (err?.code === '23505') return res.status(400).json({ error: 'Email ou nom d’utilisateur déjà utilisé.' });
+    if (err?.code === '23505') {
+      // au cas où l’index unique bidx remonte une violation
+      return res.status(400).json({ error: 'Email, téléphone ou nom d’utilisateur déjà utilisé.' });
+    }
     console.error('❌ Erreur SQL :', err?.message || err);
     return res.status(500).json({ error: 'Erreur serveur.' });
   } finally {
@@ -213,25 +214,60 @@ export const register = async (req: Request, res: Response) => {
 };
 
 
+
 // ➤ Connexion
 export const login = async (req: Request, res: Response) => {
   console.log('🟡 Requête login reçue avec :', req.body);
   const { username, password } = req.body;
-  const ip = requestIp.getClientIp(req);
+  const ip = requestIp.getClientIp(req) || req.ip || '';
 
   try {
-    const result = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
-    if (result.rowCount === 0) return res.status(401).json({ error: 'Nom d’utilisateur ou mot de passe incorrect.' });
+    // On récupère ce qu’il faut explicitement (évite les surprises avec SELECT *)
+    const result = await pool.query(
+      `SELECT
+         id,
+         username,
+         role,
+         password_hash,
+         is_deceased,
+         is_blacklisted,
+         is_otp_verified,
+         photo_url,
+         is_verified,
+         verified_at,
+         identity_verified,
+         -- colonnes en clair (encore présentes)
+         email,
+         phone,
+         first_name,
+         last_name,
+         -- colonnes chiffrées (peuvent être NULL/absentes selon la migration)
+         email_enc,
+         phone_enc
+       FROM users
+       WHERE username = $1`,
+      [username]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(401).json({ error: 'Nom d’utilisateur ou mot de passe incorrect.' });
+    }
 
     const user = result.rows[0];
 
-    const isMatch = await bcrypt.compare(password, user.password_hash);
-    if (!isMatch) return res.status(401).json({ error: 'Nom d’utilisateur ou mot de passe incorrect.' });
+    const isMatch = await bcrypt.compare(String(password), user.password_hash);
+    if (!isMatch) {
+      return res.status(401).json({ error: 'Nom d’utilisateur ou mot de passe incorrect.' });
+    }
 
     if (user.is_deceased) return res.status(403).json({ error: 'Ce compte est marqué comme décédé.' });
     if (user.is_blacklisted) return res.status(403).json({ error: 'Ce compte est sur liste noire.' });
 
-    const ipResult = await pool.query('SELECT 1 FROM login_history WHERE user_id = $1 AND ip_address = $2', [user.id, ip]);
+    // A-t-on déjà vu cet IP ?
+    const ipResult = await pool.query(
+      'SELECT 1 FROM login_history WHERE user_id = $1 AND ip_address = $2',
+      [user.id, ip]
+    );
     const isNewIP = ipResult.rowCount === 0;
     const requiresOTP = !user.is_otp_verified || isNewIP;
 
@@ -244,14 +280,19 @@ export const login = async (req: Request, res: Response) => {
         [user.id, code]
       );
       console.log(`📩 OTP pour ${user.username} : ${code}`);
+      // 👉 envoi email/SMS possible ici si souhaité
     } else {
-      await pool.query('INSERT INTO login_history (user_id, ip_address) VALUES ($1, $2)', [user.id, ip]);
+      await pool.query(
+        'INSERT INTO login_history (user_id, ip_address) VALUES ($1, $2)',
+        [user.id, ip]
+      );
     }
 
-    const email = decryptNullable(user.email_enc);
-    const phone = decryptNullable(user.phone_enc);
-    const firstName = decryptNullable(user.first_name_enc);
-    const lastName = decryptNullable(user.last_name_enc);
+    // ✅ Déchiffre si dispo, sinon fallback sur la colonne en clair
+    const email = decryptNullable(user.email_enc) ?? user.email ?? '';
+    const phone = decryptNullable(user.phone_enc) ?? user.phone ?? '';
+    const firstName = user.first_name ?? '';   // pas de first_name_enc dans ton schéma actuel
+    const lastName  = user.last_name  ?? '';
 
     const token = jwt.sign(
       { id: user.id, email, role: user.role || 'user', is_otp_verified: user.is_otp_verified || false },
@@ -259,7 +300,8 @@ export const login = async (req: Request, res: Response) => {
       { expiresIn: '1h' }
     );
 
-    const maskUsername = (name: string): string => (name.length <= 4 ? name : name.slice(0, 4) + '*'.repeat(name.length - 4));
+    const maskUsername = (name: string): string =>
+      name.length <= 4 ? name : name.slice(0, 4) + '*'.repeat(name.length - 4);
 
     res.status(200).json({
       message: 'Connexion réussie',
@@ -268,10 +310,10 @@ export const login = async (req: Request, res: Response) => {
       user: {
         id: user.id,
         username: maskUsername(user.username),
-        email: email ?? '',
-        phone: phone ?? '',
-        first_name: firstName ?? '',
-        last_name: lastName ?? '',
+        email,
+        phone,
+        first_name: firstName,
+        last_name: lastName,
         photo_url: user.photo_url || null,
         is_verified: user.is_verified || false,
         verified_at: user.verified_at || null,
@@ -280,8 +322,8 @@ export const login = async (req: Request, res: Response) => {
         role: user.role || 'user',
       },
     });
-  } catch (error:any) {
-    console.error('❌ Erreur dans login:', error.message);
+  } catch (error: any) {
+    console.error('❌ Erreur dans login:', error?.message || error);
     res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
