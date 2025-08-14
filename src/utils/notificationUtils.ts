@@ -1,59 +1,78 @@
+// src/utils/notificationUtils.ts
 import nodemailer from 'nodemailer';
 import twilio from 'twilio';
 import dotenv from 'dotenv';
 
 dotenv.config();
 
-// --- Init Twilio ---
+/* ===========================
+   TWILIO
+=========================== */
 const twilioClient = twilio(
   process.env.TWILIO_SID!,
   process.env.TWILIO_TOKEN!
 );
 
-// --- ENVOI EMAIL ---
-export const sendEmail = async ({
-  to,
-  subject,
-  text,
-}: {
+/* ===========================
+   EMAIL
+=========================== */
+export type MailArgs = {
   to: string;
   subject: string;
-  text: string;
-}): Promise<void> => {
-  const { EMAIL_USER, EMAIL_PASS } = process.env;
+  text?: string;   // optionnel
+  html?: string;   // optionnel
+};
 
+// Transporter créé une seule fois (perf + stabilité)
+// -> Par défaut Gmail via APP PASSWORD (2FA requis)
+const EMAIL_USER = process.env.EMAIL_USER;
+const EMAIL_PASS = process.env.EMAIL_PASS;
+
+if (!EMAIL_USER || !EMAIL_PASS) {
+  // On n'empêche pas le process de démarrer, mais on log une alerte claire
+  console.warn('⚠️ EMAIL_USER ou EMAIL_PASS manquant dans .env — sendEmail échouera.');
+}
+
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: { user: EMAIL_USER, pass: EMAIL_PASS },
+  // Si tu utilises un SMTP custom, remplace par:
+  // host: process.env.MAIL_HOST,
+  // port: Number(process.env.MAIL_PORT) || 587,
+  // secure: !!Number(process.env.MAIL_SECURE), // true si 465
+  // auth: { user: process.env.MAIL_USER, pass: process.env.MAIL_PASS },
+});
+
+function stripHtml(input: string) {
+  return input.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+export const sendEmail = async ({ to, subject, text, html }: MailArgs): Promise<void> => {
   if (!EMAIL_USER || !EMAIL_PASS) {
     throw new Error('EMAIL_USER ou EMAIL_PASS manquant dans .env');
   }
-
-  const transporter = nodemailer.createTransport({
-    service: 'gmail',
-    auth: {
-      user: EMAIL_USER,
-      pass: EMAIL_PASS,
-    },
-  });
 
   try {
     await transporter.sendMail({
       from: `"Cash Hay" <${EMAIL_USER}>`,
       to,
       subject,
-      text,
+      // Toujours fournir un text fallback pour la délivrabilité
+      text: text ?? (html ? stripHtml(html) : ''),
+      html,
     });
     console.log(`📨 Email envoyé à ${to}`);
   } catch (error) {
     console.error('❌ Erreur lors de l’envoi de l’email :', error);
-    // Tu peux choisir de ne pas throw ici si tu veux éviter de bloquer le flux
+    // À toi de décider si tu veux throw ici:
     // throw new Error('Échec de l’envoi de l’email.');
   }
 };
 
-// --- ENVOI SMS ---
-export const sendSMS = async (
-  phone: string,
-  message: string
-): Promise<void> => {
+/* ===========================
+   SMS
+=========================== */
+export const sendSMS = async (phone: string, message: string): Promise<void> => {
   const { TWILIO_PHONE_NUMBER } = process.env;
 
   if (!TWILIO_PHONE_NUMBER) {
@@ -74,7 +93,9 @@ export const sendSMS = async (
   }
 };
 
-// --- ENVOI PUSH NOTIFICATION Expo ---
+/* ===========================
+   PUSH (Expo)
+=========================== */
 export const sendPushNotification = async (
   expoPushToken: string,
   title: string,
@@ -102,9 +123,12 @@ export const sendPushNotification = async (
   }
 };
 
-// --- FONCTION CENTRALE POUR NOTIFIER UN UTILISATEUR ---
+/* ===========================
+   NOTIFICATION CENTRALE
+=========================== */
 /**
- * Notifie par push, email, et SMS selon les infos disponibles
+ * Notifie par push, email (HTML supporté), et SMS selon les infos disponibles.
+ * - `body` sert pour le push et comme fallback texte pour l’email si `emailText` absent.
  */
 export const notifyUser = async ({
   expoPushToken,
@@ -113,22 +137,33 @@ export const notifyUser = async ({
   title,
   body,
   subject,
-  sms
+  sms,
+  emailText,
+  emailHtml,
 }: {
-  expoPushToken?: string,
-  email?: string,
-  phone?: string,
-  title: string,
-  body: string,
-  subject?: string,
-  sms?: string,
+  expoPushToken?: string;
+  email?: string;
+  phone?: string;
+  title: string;         // utilisé pour PUSH
+  body: string;          // utilisé pour PUSH et fallback email text
+  subject?: string;      // requis si email
+  sms?: string;          // texte SMS (sinon pas d’envoi SMS)
+  emailText?: string;    // texte email explicite (sinon fallback = body)
+  emailHtml?: string;    // version HTML de l’email (optionnelle)
 }) => {
   try {
     if (expoPushToken) await sendPushNotification(expoPushToken, title, body);
-    if (email && subject) await sendEmail({ to: email, subject, text: body });
+    if (email && subject) {
+      await sendEmail({
+        to: email,
+        subject,
+        text: emailText ?? body,
+        html: emailHtml, // nouveau champ pris en charge
+      });
+    }
     if (phone && sms) await sendSMS(phone, sms);
   } catch (err) {
-    // Log mais ne bloque jamais la suite du code business
+    // On log, mais on ne bloque pas ton flux business
     console.error('❌ Erreur dans notifyUser :', err);
   }
 };

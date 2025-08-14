@@ -1,11 +1,12 @@
+// src/utils/emailUtils.ts
 import db from '../config/db';
 import { sendEmail, sendSMS } from './notificationUtils';
-
+import crypto from 'crypto';
 
 export const maskEmail = (email: string): string => {
   const [user, domain] = email.split('@');
-  const maskedUser = user.slice(0, 2) + '***';
-  return `${maskedUser}@${domain}`;
+  const maskedUser = (user ?? '').slice(0, 2) + '***';
+  return `${maskedUser}@${domain ?? ''}`;
 };
 
 export const sendSecurityAlertEmail = async (to: string): Promise<void> => {
@@ -17,6 +18,12 @@ export const sendSecurityAlertEmail = async (to: string): Promise<void> => {
   });
 };
 
+/**
+ * Envoie un OTP par email + SMS.
+ * ⚠️ Ici on attend toujours des coordonnées en clair.
+ * Si tes emails/téléphones sont stockés chiffrés,
+ * déchiffre/résous-les AVANT d’appeler cette fonction.
+ */
 export const sendOTP = async (phone: string, email: string, otp: string): Promise<void> => {
   try {
     await sendEmail({
@@ -32,18 +39,38 @@ export const sendOTP = async (phone: string, email: string, otp: string): Promis
   }
 };
 
-
+/**
+ * Stocke l’OTP de manière sécurisée (hash SHA-256) dans la table otps
+ * en utilisant la colonne `code_hash` (plus de colonne `code` en clair).
+ */
 export const storeOTP = async (userId: string, otp: string): Promise<void> => {
+  const codeHash = crypto.createHash('sha256').update(otp, 'utf8').digest('hex');
+
+  // On supprime d’abord les anciens OTP de cet utilisateur puis on insère le nouveau
   await db.query('DELETE FROM otps WHERE user_id = $1', [userId]);
 
-  
+  await db.query(
+    `INSERT INTO otps (user_id, code_hash, expires_at, created_at)
+     VALUES ($1, $2, NOW() + INTERVAL '10 minutes', NOW())`,
+    [userId, codeHash]
+  );
 };
 
+/**
+ * Vérifie l’OTP en comparant le hash (code_hash) et la validité temporelle.
+ */
 export const verifyOTP = async (userId: string, code: string): Promise<boolean> => {
+  const codeHash = crypto.createHash('sha256').update(code, 'utf8').digest('hex');
+
   const result = await db.query(
-    'SELECT * FROM otps WHERE user_id = $1 AND code = $2 AND expires_at > NOW()',
-    [userId, code]
+    `SELECT 1
+       FROM otps
+      WHERE user_id = $1
+        AND code_hash = $2
+        AND expires_at > NOW()
+      LIMIT 1`,
+    [userId, codeHash]
   );
 
-  return result.rows.length > 0;
+  return (result.rowCount ?? 0) > 0;
 };
