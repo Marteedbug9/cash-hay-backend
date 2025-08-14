@@ -332,38 +332,64 @@ export const login = async (req: Request, res: Response) => {
 
 // ➤ Récupération de profil
 export const getProfile = async (req: Request, res: Response) => {
-  const userId = (req as any).user?.id;
-  if (!userId) return res.status(401).json({ error: 'Non authentifié.' });
+  const userId = req.user?.id;
+  if (!userId) return res.status(401).json({ error: 'Utilisateur non authentifié.' });
 
   try {
-    const result = await pool.query(
-      `SELECT u.id, u.username,
-              u.email_enc, u.phone_enc, u.address_enc,
-              u.first_name_enc, u.last_name_enc,
-              m.contact
-         FROM users u
-    LEFT JOIN members m ON m.user_id = u.id
-        WHERE u.id = $1`,
+    const { rows } = await pool.query(
+      `
+      SELECT
+        u.id,
+        u.username,
+        -- champs potentiellement chiffrés + fallback en clair
+        u.email,       u.email_enc,
+        u.phone,       u.phone_enc,
+        u.address,     u.address_enc,
+        -- noms non chiffrés dans ton schéma actuel
+        u.first_name,  u.last_name,
+        u.photo_url,
+        u.is_verified, u.verified_at, u.identity_verified,
+        m.contact
+      FROM users u
+      LEFT JOIN members m ON m.user_id = u.id
+      WHERE u.id = $1
+      `,
       [userId]
     );
-    if (result.rowCount === 0) return res.status(404).json({ error: 'Utilisateur non trouvé.' });
 
-    const u = result.rows[0];
-    res.json({
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Utilisateur non trouvé.' });
+    }
+
+    const r = rows[0];
+
+    // Déchiffre si présent, sinon fallback vers la colonne en clair
+    const email   = decryptNullable(r.email_enc)   ?? r.email   ?? '';
+    const phone   = decryptNullable(r.phone_enc)   ?? r.phone   ?? '';
+    const address = decryptNullable(r.address_enc) ?? r.address ?? '';
+
+    const fullName = [r.first_name, r.last_name].filter(Boolean).join(' ');
+
+    return res.json({
       user: {
-        id: u.id,
-        username: u.username,
-        email:   decryptNullable(u.email_enc)   ?? '',
-        phone:   decryptNullable(u.phone_enc)   ?? '',
-        address: decryptNullable(u.address_enc) ?? '',
-        first_name: decryptNullable(u.first_name_enc) ?? '',
-        last_name:  decryptNullable(u.last_name_enc)  ?? '',
-        contact:    u.contact ?? '',
-      }
+        id: r.id,
+        username: r.username,
+        email,
+        phone,
+        address,
+        first_name: r.first_name ?? '',
+        last_name:  r.last_name  ?? '',
+        full_name:  fullName,
+        contact:    r.contact ?? '',
+        photo_url:  r.photo_url || null,
+        is_verified:        !!r.is_verified,
+        verified_at:        r.verified_at || null,
+        identity_verified:  !!r.identity_verified,
+      },
     });
   } catch (err) {
     console.error('❌ Erreur profil:', err);
-    res.status(500).json({ error: 'Erreur serveur.' });
+    return res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
 
