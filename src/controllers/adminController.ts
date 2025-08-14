@@ -80,7 +80,7 @@ export const getUserDetail = async (req: Request, res: Response) => {
         u.email_enc, u.phone_enc,
         u.first_name_enc, u.last_name_enc,
         u.address_enc,
-        u.birth_date, u.birth_country, u.birth_place, 
+        u.birth_date, u.birth_country, 
         u.id_type, u.id_number, u.id_issue_date, u.id_expiry_date,
         u.role, u.is_verified, u.identity_verified, u.is_blacklisted, u.is_deceased,
         u.city, u.department, u.country, u.zip_code, 

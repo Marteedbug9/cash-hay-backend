@@ -49,7 +49,7 @@ export const register = async (req: Request, res: Response) => {
   const {
     first_name, last_name, gender, address, city, department, zip_code = '',
     country, email, phone,
-    birth_date, birth_country, birth_place,
+    birth_date, birth_country,
     id_type, id_number, id_issue_date, id_expiry_date,
     username, password,
     accept_terms,
@@ -67,7 +67,7 @@ export const register = async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Mot de passe trop court (min. 8 caractères).' });
   }
   const required = { first_name, last_name, gender, address, city, department, country,
-    phone, birth_date, birth_country, birth_place, id_type, id_number, id_issue_date, id_expiry_date };
+    phone, birth_date, birth_country, id_type, id_number, id_issue_date, id_expiry_date };
   for (const [k, v] of Object.entries(required)) {
     if (v == null || v === '') return res.status(400).json({ error: `Le champ "${k}" est requis.` });
   }
@@ -105,7 +105,7 @@ export const register = async (req: Request, res: Response) => {
         address_enc, city, department, zip_code, country,
         email_enc, email_bidx,
         phone_enc, phone_bidx,
-        birth_date, birth_country, birth_place,
+        birth_date, birth_country,
         id_type, id_number, id_issue_date, id_expiry_date,
         password_hash, role, accept_terms, recovery_code,
         created_at
@@ -118,7 +118,7 @@ export const register = async (req: Request, res: Response) => {
         $13,$14,
         $15,$16,$17,
         $18,$19,$20,$21,
-        $22,$23,$24,$25,
+        $22,$23,$24,
         NOW()
       )
       `,
@@ -130,7 +130,7 @@ export const register = async (req: Request, res: Response) => {
         encrypt(address), city, department, zip_code, country,
         encrypt(email), emailBidx,
         encrypt(phone), phoneBidx,
-        birth_date, birth_country, birth_place,
+        birth_date, birth_country, 
         id_type, id_number, id_issue_date, id_expiry_date,
         hashedPassword, 'user', true, recoveryCode,
       ]

@@ -63,7 +63,7 @@ router.get('/users/:id', verifyToken, verifyAdmin, async (req, res) => {
     const userResult = await pool.query(`
       SELECT
         u.id, u.username, u.email, u.first_name, u.last_name, u.address, u.phone,
-        u.birth_date, u.birth_country, u.birth_place, u.id_type, u.id_number,
+        u.birth_date, u.birth_country, u.id_type, u.id_number,
         u.id_issue_date, u.id_expiry_date, u.role, u.is_verified, u.identity_verified,
         u.is_blacklisted, u.is_deceased, u.city, u.department, u.country, u.zip_code,
         u.created_at, u.face_url, u.document_url,
