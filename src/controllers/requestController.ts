@@ -5,51 +5,78 @@ import { v4 as uuidv4 } from 'uuid';
 import { decryptNullable, blindIndexEmail, blindIndexPhone } from '../utils/crypto';
 import { addNotification } from './notificationsController'; // réutilise la logique notif (chiffrage interne)
 
+// helpers simples
+const isEmail = (v: string) => /\S+@\S+\.\S+/.test(v);
+const normalizeContact = (raw: string) => {
+  const s = String(raw || '').trim();
+  return isEmail(s) ? s.toLowerCase() : s.replace(/\D/g, '');
+};
+
 export const createRequest = async (req: Request, res: Response) => {
   const senderId = req.user?.id;
-  const { recipientId, amount } = req.body as { recipientId?: string; amount?: number };
+  const { contact, amount } = req.body as { contact?: string; amount?: number };
 
   const ip_address =
     (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ||
-    req.socket.remoteAddress ||
-    '';
+    req.socket.remoteAddress || '';
   const user_agent = req.headers['user-agent'] || '';
 
-  if (!senderId || !recipientId || amount == null) {
-    return res.status(400).json({ error: 'Champs requis manquants.' });
+  if (!senderId || !contact || amount == null) {
+    return res.status(400).json({ error: 'Champs requis manquants (contact, amount).' });
   }
   if (typeof amount !== 'number' || !Number.isFinite(amount) || amount <= 0) {
     return res.status(400).json({ error: 'Montant invalide.' });
   }
 
+  const normalized = normalizeContact(contact);
   const transactionId = uuidv4();
 
+  const client = await pool.connect();
   try {
-    await pool.query('BEGIN');
+    await client.query('BEGIN');
 
-    // ✅ Récupère les infos du destinataire (pour remplir recipient_* dans transactions)
-    // On lit les colonnes chiffrées / bidx et on les "copie" telles quelles dans la transaction.
-    const recipientRes = await pool.query(
-      `SELECT id, email_enc, email_bidx, phone_enc, phone_bidx
+    // 1) Résoudre le DESTINATAIRE via members.contact
+    const mRec = await client.query(
+      `SELECT id AS member_id, user_id
+         FROM members
+        WHERE contact = $1
+        LIMIT 1`,
+      [normalized]
+    );
+    if (mRec.rowCount === 0 || !mRec.rows[0].user_id) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: "Ce contact n'est pas un membre actif." });
+    }
+    const recipientMemberId: string = mRec.rows[0].member_id;
+    const recipientUserId: string = mRec.rows[0].user_id;
+
+    // 2) Empêcher de s’auto-demander
+    const mSender = await client.query(
+      `SELECT contact FROM members WHERE user_id = $1 LIMIT 1`,
+      [senderId]
+    );
+    const senderContact = mSender.rows[0]?.contact ? normalizeContact(mSender.rows[0].contact) : null;
+    if (senderContact && senderContact === normalized) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Impossible de vous envoyer une demande à vous-même.' });
+    }
+
+    // 3) Copier les colonnes chiffrées du destinataire (si tu les utilises dans transactions)
+    const uRec = await client.query(
+      `SELECT email_enc, email_bidx, phone_enc, phone_bidx
          FROM users
         WHERE id = $1
         LIMIT 1`,
-      [recipientId]
+      [recipientUserId]
     );
-    if (recipientRes.rowCount === 0) {
-      await pool.query('ROLLBACK');
-      return res.status(404).json({ error: 'Destinataire introuvable.' });
+    if (uRec.rowCount === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Utilisateur destinataire introuvable.' });
     }
-    const recipient = recipientRes.rows[0] as {
-      id: string;
-      email_enc: string | null;
-      email_bidx: string | null;
-      phone_enc: string | null;
-      phone_bidx: string | null;
-    };
+    const recip = uRec.rows[0];
 
-    // ✅ Insère la transaction (pending) en HTG + colonnes destinataire chiffrées
-    await pool.query(
+    // 4) INSERT transaction (pending) en HTG
+    await client.query(
       `INSERT INTO transactions (
          id, user_id, type, amount, currency, status, description,
          recipient_id,
@@ -68,18 +95,43 @@ export const createRequest = async (req: Request, res: Response) => {
         senderId,
         amount,
         'Demande d’argent',
-        recipientId,
-        recipient.email_enc ?? null,
-        recipient.email_bidx ?? (null as any),
-        recipient.phone_enc ?? null,
-        recipient.phone_bidx ?? (null as any),
+        recipientUserId,
+        recip.email_enc ?? null,
+        recip.email_bidx ?? null,
+        recip.phone_enc ?? null,
+        recip.phone_bidx ?? null,
         ip_address,
         user_agent,
       ]
     );
 
-    // ✅ Audit log
-    await pool.query(
+    // 5) Infos d’affichage EXPÉDITEUR (users + members)
+    const senderInfo = await client.query(
+      `SELECT u.first_name, u.last_name, u.photo_url, m.contact
+         FROM users u
+         LEFT JOIN members m ON m.user_id = u.id
+        WHERE u.id = $1
+        LIMIT 1`,
+      [senderId]
+    );
+    const { first_name, last_name, photo_url } = senderInfo.rows[0] || {};
+    const from_contact = senderInfo.rows[0]?.contact || '—';
+
+    // 6) Notification chez le destinataire (utilise ton addNotification qui chiffre en DB)
+    await addNotification({
+      user_id: recipientUserId,     // le propriétaire qui reçoit la notif
+      type: 'request',
+      from_first_name: first_name || '',
+      from_last_name:  last_name  || '',
+      from_contact,                 // vient de members.contact (expéditeur)
+      from_profile_image: photo_url || '',
+      amount,
+      status: 'pending',
+      transaction_id: transactionId,
+    });
+
+    // 7) Audit
+    await client.query(
       `INSERT INTO audit_logs (id, user_id, action, ip_address, user_agent, details)
        VALUES ($1, $2, $3, $4, $5, $6)`,
       [
@@ -88,55 +140,21 @@ export const createRequest = async (req: Request, res: Response) => {
         'request_money',
         ip_address,
         user_agent,
-        `Demande ${amount} HTG à user:${recipientId}`,
+        `Demande ${amount} HTG à member:${recipientMemberId} (user:${recipientUserId})`,
       ]
     );
 
-    // ✅ Infos de l’expéditeur (pour la notif côté destinataire)
-    const senderInfo = await pool.query(
-      `SELECT first_name, last_name, phone_enc, email_enc, photo_url
-         FROM users
-        WHERE id = $1
-        LIMIT 1`,
-      [senderId]
-    );
-    if (senderInfo.rowCount === 0) {
-      throw new Error('Expéditeur introuvable.');
-    }
-    const sender = senderInfo.rows[0] as {
-      first_name: string | null;
-      last_name: string | null;
-      phone_enc: string | null;
-      email_enc: string | null;
-      photo_url: string | null;
-    };
-
-    // on choisit un "contact" principal pour l’affichage (phone si dispo, sinon email)
-    const senderPhone = decryptNullable(sender.phone_enc) || '';
-    const senderEmail = decryptNullable(sender.email_enc) || '';
-    const from_contact = senderPhone || senderEmail || '—';
-
-    // ✅ Notification (réutilise addNotification qui gère le chiffrage interne si tu l’as adapté)
-    await addNotification({
-      user_id: recipientId,              // destinataire de la notif (celui qui reçoit la demande)
-      type: 'request',
-      from_first_name: sender.first_name || '',
-      from_last_name: sender.last_name || '',
-      from_contact,                      // en clair ici; addNotification peut chiffrer selon ta version
-      from_profile_image: sender.photo_url || '',
-      amount,
-      status: 'pending',
-      transaction_id: transactionId,
+    await client.query('COMMIT');
+    return res.status(200).json({
+      message: 'Demande d’argent enregistrée avec succès.',
+      transactionId,
     });
-
-    await pool.query('COMMIT');
-    return res
-      .status(200)
-      .json({ message: 'Demande d’argent enregistrée avec succès.', transactionId });
   } catch (err) {
+    await client.query('ROLLBACK');
     console.error('❌ Erreur createRequest :', err);
-    await pool.query('ROLLBACK');
     return res.status(500).json({ error: 'Erreur serveur lors de la demande.' });
+  } finally {
+    client.release();
   }
 };
 
