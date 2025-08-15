@@ -3,6 +3,7 @@ import { Request, Response } from 'express';
 import pool from '../config/db';
 import { sendSMS, sendEmail } from '../utils/notificationUtils';
 import { decryptNullable, blindIndexPhone } from '../utils/crypto';
+import { fetchIPLocation, formatLocationLabel } from '../utils/ipLocation';
 
 const DEDUP_WINDOW_MIN = 60; // ↔ configurable
 
@@ -10,12 +11,12 @@ export const alertIfSuspiciousIP = async (req: Request, res: Response) => {
   const user = req.user;
   if (!user) return res.status(401).json({ error: 'Non autorisé.' });
 
-  const ipAddress =
-    req.headers['x-forwarded-for']?.toString().split(',')[0]?.trim() ||
+  const rawIp =
+    (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ||
     req.socket.remoteAddress ||
     '';
 
-  // IP connues (dernières 5)
+  // IP déjà connue (5 dernières)
   const { rows: knownIPs } = await pool.query(
     `SELECT ip_address FROM login_history
       WHERE user_id = $1
@@ -23,65 +24,81 @@ export const alertIfSuspiciousIP = async (req: Request, res: Response) => {
       LIMIT 5`,
     [user.id]
   );
-  const knownIpList = knownIPs.map(r => r.ip_address);
-
-  if (knownIpList.includes(ipAddress)) {
-    // Rien à faire : IP déjà connue
+  if (knownIPs.map(r => r.ip_address).includes(rawIp)) {
     return res.status(200).json({ message: 'IP connue, aucune alerte envoyée.' });
   }
 
-  // 🔎 Dé-duplication : existe-t-il déjà une alerte récente (≤ 60 min) pour cette IP ?
+  // Dé-duplication 60 min
   const dedup = await pool.query(
-    `SELECT id, created_at
-       FROM alerts
+    `SELECT id FROM alerts
       WHERE user_id = $1
         AND contact_attempt = $2
         AND created_at >= NOW() - INTERVAL '${DEDUP_WINDOW_MIN} minutes'
       ORDER BY created_at DESC
       LIMIT 1`,
-    [user.id, ipAddress]
+    [user.id, rawIp]
   );
-
-  if ((dedup.rows?.length ?? 0) > 0) {
-    // Log d’observation, pas de re-notification
+  if (dedup.rowCount) {
     await pool.query(
       `INSERT INTO audit_logs (user_id, action, details, ip_address, user_agent, created_at)
        VALUES ($1, 'suspicious_ip_alert_deduped',
                $2, $3, $4, NOW())`,
       [
         user.id,
-        `Alerte déjà existante (id=${dedup.rows[0].id}) pour IP=${ipAddress} dans ${DEDUP_WINDOW_MIN} min`,
-        ipAddress,
+        `Alerte déjà existante pour IP=${rawIp} dans ${DEDUP_WINDOW_MIN} min`,
+        rawIp,
         req.headers['user-agent'] || 'N/A',
       ]
     );
     return res.status(200).json({ message: 'Alerte déjà présente récemment (dé-duplication).' });
   }
 
-  // ➕ Créer une nouvelle alerte
+  // 🔎 Localisation via ip-api
+  const loc = await fetchIPLocation(rawIp);
+  const locationLabel = formatLocationLabel(loc);
+
+  // ➕ Créer l’alerte
   const ins = await pool.query(
-    `INSERT INTO alerts (user_id, contact_attempt, raw_response, created_at, updated_at)
-     VALUES ($1, $2, NULL, NOW(), NOW())
+    `INSERT INTO alerts (user_id, contact_attempt, raw_response, created_at)
+     VALUES ($1, $2, NULL, NOW())
      RETURNING id`,
-    [user.id, ipAddress]
+    [user.id, rawIp]
   );
   const alertId = ins.rows[0].id as string;
+
+  // ⬇️ AJOUT : persister la localisation si dispo (sans bloquer)
+  if (loc) {
+    try {
+      await pool.query(
+        `UPDATE alerts
+           SET ip_city = $1, ip_region = $2, ip_country = $3, ip_lat = $4, ip_lon = $5
+         WHERE id = $6`,
+        [loc.city, loc.region, loc.country, loc.lat, loc.lon, alertId]
+      );
+    } catch {}
+  }
 
   await pool.query(
     `INSERT INTO audit_logs (user_id, action, details, ip_address, user_agent, created_at)
      VALUES ($1, 'suspicious_ip_alert_created', $2, $3, $4, NOW())`,
-    [user.id, `Nouvelle IP détectée: ${ipAddress}`, ipAddress, req.headers['user-agent'] || 'N/A']
+    [user.id, `Nouvelle IP détectée: ${rawIp} (${locationLabel})`, rawIp, req.headers['user-agent'] || 'N/A']
   );
 
-  // 🔐 Déchiffrer les contacts
-  const phone = decryptNullable((user as any).phone_enc);
-  const email = decryptNullable((user as any).email_enc);
+  // 🔐 Récupère les contacts depuis la DB (compat colonnes enc/plain)
+  const cRes = await pool.query(
+    'SELECT email, email_enc, phone, phone_enc FROM users WHERE id = $1',
+    [user.id]
+  );
+  const c = cRes.rows[0] || {};
+  const email = decryptNullable(c.email_enc) ?? c.email ?? '';
+  const phone = decryptNullable(c.phone_enc) ?? c.phone ?? '';
 
+  // ✉️ / 📱 Notifications avec localisation
   if (phone) {
     try {
       await sendSMS(
         phone,
-        `Alerte sécurité Cash Hay : Connexion depuis une nouvelle IP (${ipAddress}). Répondez Y pour autoriser, N pour bloquer.`
+        `Alerte Cash Hay : connexion depuis ${locationLabel} (IP ${rawIp}). Répondez Y pour autoriser, N pour bloquer.`
       );
       await pool.query(
         `INSERT INTO audit_logs (user_id, action, details, created_at)
@@ -102,7 +119,7 @@ export const alertIfSuspiciousIP = async (req: Request, res: Response) => {
       await sendEmail({
         to: email,
         subject: 'Alerte Sécurité Cash Hay',
-        text: `Connexion depuis une nouvelle IP (${ipAddress}). Si c'est vous, répondez Y par SMS. Sinon, répondez N.`,
+        text: `Connexion depuis ${locationLabel} (IP ${rawIp}). Si c'est vous, répondez Y par SMS. Sinon, répondez N.`,
       });
       await pool.query(
         `INSERT INTO audit_logs (user_id, action, details, created_at)

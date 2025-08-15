@@ -752,6 +752,7 @@ export const confirmSuspiciousAttempt: RequestHandler = async (req: Request, res
 
 // ➤ Vérification OTP après login
 
+// ➤ Vérification OTP après login
 export const verifyOTP: RequestHandler = async (req: Request, res: Response) => {
   const { userId, code } = req.body;
   if (!userId || !code) return res.status(400).json({ error: 'ID utilisateur et code requis.' });
@@ -769,40 +770,59 @@ export const verifyOTP: RequestHandler = async (req: Request, res: Response) => 
       return res.status(400).json({ error: 'Code invalide ou expiré.' });
     }
 
-    // 2) Gate alerte IP (≤ 60 min)
+    // 2) Gate alerte IP (⏱ 60 secondes)
+    const GATE_WINDOW_MS = 60 * 1000;
     const { rows: alerts } = await pool.query(
-      `SELECT response, created_at
+      `SELECT id, response, created_at
          FROM alerts
         WHERE user_id = $1
         ORDER BY created_at DESC
         LIMIT 1`,
       [userId]
     );
+
     if (alerts.length) {
       const last = alerts[0];
-      const recent = (Date.now() - new Date(last.created_at).getTime()) <= 60 * 60 * 1000;
+      const ageMs = Date.now() - new Date(last.created_at).getTime();
+      const withinGate = ageMs <= GATE_WINDOW_MS;
 
-      if (recent) {
+      if (withinGate) {
         if (last.response === 'N') {
-          return res.status(403).json({ error: "Connexion bloquée : tentative suspecte signalée (réponse N). Contactez le support." });
+          return res.status(403).json({
+            error: "Connexion bloquée : tentative suspecte signalée (réponse N). Contactez le support."
+          });
         }
         if (last.response !== 'Y') {
-          return res.status(403).json({ error: "Confirmez la connexion en répondant 'Y' au SMS d'alerte, puis réessayez." });
+          return res.status(403).json({
+            error: "Confirmez la connexion en répondant 'Y' au SMS d'alerte, ou attendez 60 s pour valider via OTP.",
+            waitMs: Math.max(GATE_WINDOW_MS - ageMs, 0)
+          });
+        }
+      } else {
+        // 60 s écoulées, pas de réponse → on laisse passer; on marque TIMEOUT (best-effort)
+        if (!last.response) {
+          try {
+            await pool.query(
+              `UPDATE alerts SET response = 'TIMEOUT' WHERE id = $1`,
+              [last.id]
+            );
+          } catch {} // non bloquant
         }
       }
     }
 
-    // 3) Marque l’OTP comme vérifié seulement après le gate
+    // 3) Marque l’OTP comme vérifié
     await pool.query('UPDATE users SET is_otp_verified = true WHERE id = $1', [userId]);
     await pool.query('DELETE FROM otps WHERE user_id = $1', [userId]);
 
     // 4) Charge l’utilisateur et renvoie le token
     const userRes = await pool.query(
-      'SELECT id, username, role, email, email_enc, phone, phone_enc, first_name, last_name, photo_url, is_verified, identity_verified, identity_request_enabled FROM users WHERE id = $1',
+      `SELECT id, username, role, email, email_enc, phone, phone_enc,
+              first_name, last_name, photo_url, is_verified, identity_verified, identity_request_enabled
+         FROM users WHERE id = $1`,
       [userId]
     );
     const user = userRes.rows[0];
-
     const email = decryptNullable(user.email_enc) ?? user.email ?? '';
     const phone = decryptNullable(user.phone_enc) ?? user.phone ?? '';
 
@@ -818,7 +838,7 @@ export const verifyOTP: RequestHandler = async (req: Request, res: Response) => 
       [userId, req.ip]
     );
 
-    res.status(200).json({
+    return res.status(200).json({
       token,
       user: {
         id: user.id,
@@ -836,7 +856,7 @@ export const verifyOTP: RequestHandler = async (req: Request, res: Response) => 
       },
     });
   } catch (err:any) {
-    console.error('❌ Erreur vérification OTP:', err.message);
+    console.error('❌ Erreur vérification OTP:', err?.message || err);
     return res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
