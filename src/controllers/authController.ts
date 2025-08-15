@@ -271,22 +271,51 @@ export const login = async (req: Request, res: Response) => {
     const isNewIP = ipResult.rowCount === 0;
     const requiresOTP = !user.is_otp_verified || isNewIP;
 
-    if (requiresOTP) {
-      const code = Math.floor(100000 + Math.random() * 900000).toString();
-      await pool.query('DELETE FROM otps WHERE user_id = $1', [user.id]);
-      await pool.query(
-        `INSERT INTO otps (user_id, code, created_at, expires_at)
-         VALUES ($1, $2, NOW(), NOW() + INTERVAL '10 minutes')`,
-        [user.id, code]
-      );
-      console.log(`📩 OTP pour ${user.username} : ${code}`);
-      // 👉 envoi email/SMS possible ici si souhaité
-    } else {
-      await pool.query(
-        'INSERT INTO login_history (user_id, ip_address) VALUES ($1, $2)',
-        [user.id, ip]
-      );
-    }
+if (requiresOTP) {
+  // 1) Génère et stocke un OTP (10 minutes)
+  const code = generateOTP(); // ← au lieu de Math.random()
+  await pool.query('DELETE FROM otps WHERE user_id = $1', [user.id]);
+
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + 10 * 60 * 1000);
+
+  await pool.query(
+    `INSERT INTO otps (user_id, code, created_at, expires_at)
+     VALUES ($1, $2, $3, $4)`,
+    [user.id, code, now, expiresAt]
+  );
+
+  // 2) Récupère les contacts (compat ancien/nouveau schéma)
+  const email = decryptNullable(user.email_enc) ?? user.email ?? '';
+  const phone = decryptNullable(user.phone_enc) ?? user.phone ?? '';
+
+  // 3) Envoi réel (best-effort, sans bloquer la réponse)
+  const tasks: Promise<any>[] = [];
+  if (email) {
+    tasks.push(
+      sendEmail({
+        to: email,
+        subject: 'Code de vérification - Cash Hay',
+        text: `Votre code est : ${code} (valide 10 minutes)`,
+      }).catch(e => console.error('❌ Envoi email OTP échoué :', e?.message || e))
+    );
+  }
+  if (phone) {
+    tasks.push(
+      sendSMS(phone, `Cash Hay : Votre code OTP est ${code} (10 min)`)
+        .catch(e => console.error('❌ Envoi SMS OTP échoué :', e?.message || e))
+    );
+  }
+  await Promise.all(tasks);
+
+  console.log(`📩 OTP login envoyé à ${email || '(pas d’email)'} / ${phone || '(pas de phone)'} : ${code}`);
+} else {
+  await pool.query(
+    'INSERT INTO login_history (user_id, ip_address) VALUES ($1, $2)',
+    [user.id, ip]
+  );
+}
+
 
     // ✅ Déchiffre si dispo, sinon fallback sur la colonne en clair
     const email = decryptNullable(user.email_enc) ?? user.email ?? '';
@@ -582,31 +611,60 @@ export const resendOTP: RequestHandler = async (req: Request, res: Response) => 
   if (!userId) return res.status(400).json({ error: 'ID utilisateur requis.' });
 
   try {
-    const userRes = await pool.query('SELECT email_enc, phone_enc FROM users WHERE id = $1', [userId]);
-    if (userRes.rows.length === 0) {
-      // logs (inchangés) ...
-      return res.status(404).json({ error: 'Utilisateur non trouvé.' });
+    // Récupère contacts avec fallback pour anciens comptes
+    const { rows } = await pool.query(
+      'SELECT email_enc, phone_enc, email, phone FROM users WHERE id = $1',
+      [userId]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: 'Utilisateur non trouvé.' });
+
+    const row = rows[0];
+    const email = decryptNullable(row.email_enc) ?? row.email ?? '';
+    const phone = decryptNullable(row.phone_enc) ?? row.phone ?? '';
+
+    if (!email && !phone) {
+      return res.status(400).json({ error: 'Aucun contact (email/téléphone) associé au compte.' });
     }
-    const email = decryptNullable(userRes.rows[0].email_enc) ?? '';
-    const phone = decryptNullable(userRes.rows[0].phone_enc) ?? '';
 
-    // blocage & tentatives: inchangé…
-
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    // Génère / stocke un nouvel OTP (10 min) et supprime l’ancien
+    const otp = generateOTP();
     const now = new Date();
-    const expiresAt = new Date(now.getTime() + 10 * 60000);
-    await pool.query('INSERT INTO otps (user_id, code, created_at, expires_at) VALUES ($1,$2,$3,$4)', [userId, otp, now, expiresAt]);
+    const expiresAt = new Date(now.getTime() + 10 * 60 * 1000);
 
-    await sendEmail({ to: email, subject: 'Code de vérification - Cash Hay', text: `Votre code est : ${otp}` });
-    if (phone) await sendSMS(phone, `Cash Hay : Votre code OTP est : ${otp}`);
+    await pool.query('DELETE FROM otps WHERE user_id = $1', [userId]);
+    await pool.query(
+      `INSERT INTO otps (user_id, code, created_at, expires_at)
+       VALUES ($1, $2, $3, $4)`,
+      [userId, otp, now, expiresAt]
+    );
 
-    // logs success…
-    return res.status(200).json({ message: 'Code renvoyé avec succès.' });
-  } catch (err) {
-    console.error('❌ Erreur lors du renvoi OTP:', err);
+    // Envois best-effort (email + SMS si disponibles)
+    const tasks: Promise<any>[] = [];
+    if (email) {
+      tasks.push(
+        sendEmail({
+          to: email,
+          subject: 'Code de vérification - Cash Hay',
+          text: `Votre code est : ${otp} (valide 10 minutes)`
+        }).catch(e => console.error('❌ Envoi email OTP échoué :', e?.message || e))
+      );
+    }
+    if (phone) {
+      tasks.push(
+        sendSMS(phone, `Cash Hay : Votre code OTP est ${otp} (valide 10 minutes)`)
+          .catch(e => console.error('❌ Envoi SMS OTP échoué :', e?.message || e))
+      );
+    }
+    await Promise.allSettled(tasks);
+
+    console.log(`📩 OTP renvoyé à ${email || '(pas d’email)'} / ${phone || '(pas de phone)'}`);
+    return res.status(200).json({ message: 'Code renvoyé avec succès.', expiresAt });
+  } catch (err: any) {
+    console.error('❌ Erreur lors du renvoi OTP:', err?.message || err);
     return res.status(500).json({ error: 'Erreur serveur lors du renvoi du code.' });
   }
 };
+
 
 
 
