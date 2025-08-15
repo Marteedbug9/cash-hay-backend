@@ -44,6 +44,51 @@ function getClientIp(req: Request): string {
   return (xf.split(',')[0] || req.ip || '').trim();
 }
 
+async function createSuspiciousIPAlert(
+  userRow: any,
+  ipAddress: string,
+  userAgent?: string
+) {
+  const email = decryptNullable(userRow.email_enc) ?? userRow.email ?? '';
+  const phone = decryptNullable(userRow.phone_enc) ?? userRow.phone ?? '';
+
+  // Insère l’alerte
+  const ins = await pool.query(
+    `INSERT INTO alerts (user_id, contact_attempt, raw_response, created_at, updated_at)
+     VALUES ($1, $2, NULL, NOW(), NOW())
+     RETURNING id`,
+    [userRow.id, ipAddress]
+  );
+  const alertId = ins.rows[0].id;
+
+  // Log
+  await pool.query(
+    `INSERT INTO audit_logs (user_id, action, details, ip_address, user_agent, created_at)
+     VALUES ($1, 'suspicious_ip_alert_created', $2, $3, $4, NOW())`,
+    [userRow.id, `Nouvelle IP détectée: ${ipAddress} (alert_id=${alertId})`, ipAddress, userAgent || 'N/A']
+  );
+
+  // Best-effort notifications
+  const jobs: Promise<any>[] = [];
+  if (email) {
+    jobs.push(
+      sendEmail({
+        to: email,
+        subject: 'Alerte Sécurité Cash Hay',
+        text: `Connexion depuis une nouvelle IP (${ipAddress}). Si c'est vous, répondez Y au SMS. Sinon, répondez N.`
+      }).catch(e => console.error('❌ Email alerte échoué:', e))
+    );
+  }
+  if (phone) {
+    jobs.push(
+      sendSMS(
+        phone,
+        `Alerte sécurité Cash Hay : Connexion depuis une nouvelle IP (${ipAddress}). Répondez Y pour autoriser, N pour bloquer.`
+      ).catch(e => console.error('❌ SMS alerte échoué:', e))
+    );
+  }
+  await Promise.all(jobs);
+}
 
 
 // ➤ Enregistrement
@@ -306,9 +351,18 @@ if (requiresOTP) {
         .catch(e => console.error('❌ Envoi SMS OTP échoué :', e?.message || e))
     );
   }
-  await Promise.all(tasks);
-
+    await Promise.all(tasks);
   console.log(`📩 OTP login envoyé à ${email || '(pas d’email)'} / ${phone || '(pas de phone)'} : ${code}`);
+
+  // ➕ Déclenche l’alerte IP si nouvelle IP
+  if (isNewIP) {
+    try {
+      await createSuspiciousIPAlert(user, ip, req.headers['user-agent'] as string);
+    } catch (e) {
+      console.error('⚠️ Création alerte IP échouée:', e);
+    }
+  }
+
 } else {
   await pool.query(
     'INSERT INTO login_history (user_id, ip_address) VALUES ($1, $2)',
@@ -703,22 +757,54 @@ export const verifyOTP: RequestHandler = async (req: Request, res: Response) => 
   if (!userId || !code) return res.status(400).json({ error: 'ID utilisateur et code requis.' });
 
   try {
+    // 1) OTP valide ?
     const otpRes = await pool.query(
       'SELECT code, expires_at FROM otps WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1',
       [userId]
     );
     if (otpRes.rowCount === 0) return res.status(400).json({ valid: false, reason: 'Expired or invalid code.' });
+
     const { code: storedCode, expires_at } = otpRes.rows[0];
     if (new Date() > new Date(expires_at) || String(code).trim() !== String(storedCode).trim()) {
       return res.status(400).json({ error: 'Code invalide ou expiré.' });
     }
 
+    // 2) Gate alerte IP (≤ 60 min)
+    const { rows: alerts } = await pool.query(
+      `SELECT response, created_at
+         FROM alerts
+        WHERE user_id = $1
+        ORDER BY created_at DESC
+        LIMIT 1`,
+      [userId]
+    );
+    if (alerts.length) {
+      const last = alerts[0];
+      const recent = (Date.now() - new Date(last.created_at).getTime()) <= 60 * 60 * 1000;
+
+      if (recent) {
+        if (last.response === 'N') {
+          return res.status(403).json({ error: "Connexion bloquée : tentative suspecte signalée (réponse N). Contactez le support." });
+        }
+        if (last.response !== 'Y') {
+          return res.status(403).json({ error: "Confirmez la connexion en répondant 'Y' au SMS d'alerte, puis réessayez." });
+        }
+      }
+    }
+
+    // 3) Marque l’OTP comme vérifié seulement après le gate
     await pool.query('UPDATE users SET is_otp_verified = true WHERE id = $1', [userId]);
     await pool.query('DELETE FROM otps WHERE user_id = $1', [userId]);
 
-    const userRes = await pool.query('SELECT * FROM users WHERE id = $1', [userId]);
+    // 4) Charge l’utilisateur et renvoie le token
+    const userRes = await pool.query(
+      'SELECT id, username, role, email, email_enc, phone, phone_enc, first_name, last_name, photo_url, is_verified, identity_verified, identity_request_enabled FROM users WHERE id = $1',
+      [userId]
+    );
     const user = userRes.rows[0];
-    const email = decryptNullable(user.email_enc);
+
+    const email = decryptNullable(user.email_enc) ?? user.email ?? '';
+    const phone = decryptNullable(user.phone_enc) ?? user.phone ?? '';
 
     const token = jwt.sign(
       { id: user.id, email, role: user.role, is_otp_verified: true },
@@ -737,14 +823,14 @@ export const verifyOTP: RequestHandler = async (req: Request, res: Response) => 
       user: {
         id: user.id,
         username: user.username,
-        email: email ?? '',
-        phone: decryptNullable(user.phone_enc) ?? '',
-        first_name: decryptNullable(user.first_name_enc) ?? '',
-        last_name: decryptNullable(user.last_name_enc) ?? '',
+        email,
+        phone,
+        first_name: user.first_name ?? '',
+        last_name:  user.last_name ?? '',
         photo_url: user.photo_url || null,
-        is_verified: user.is_verified || false,
+        is_verified: !!user.is_verified,
         is_otp_verified: true,
-        identity_verified: user.identity_verified || false,
+        identity_verified: !!user.identity_verified,
         identity_request_enabled: user.identity_request_enabled ?? true,
         role: user.role || 'user',
       },
@@ -754,6 +840,7 @@ export const verifyOTP: RequestHandler = async (req: Request, res: Response) => 
     return res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
+
 
 
 
@@ -845,44 +932,38 @@ export const uploadProfileImage = async (req: Request, res: Response) => {
   }
 };
 
-// 🔍 Recherche d'utilisateur par email ou téléphone
+// 🔍 Recherche d'utilisateur par contact (minimal, sécurisé)
 export const searchUserByContact = async (req: Request, res: Response) => {
   const contacts: string[] = req.body.contacts;
   if (!Array.isArray(contacts) || contacts.length === 0) {
     return res.status(400).json({ error: 'Aucun contact fourni.' });
   }
+
   try {
+    // normalisation simple (emails en lowercase, on laisse tel "as-is" si tu préfères)
     const uniqueContacts = [...new Set(contacts.map(c => c.trim().toLowerCase()))];
 
     const query = `
-      SELECT 
-        m.id AS member_id,
-        m.contact,
-        m.display_name,
-        u.id AS user_id,
-        u.username,
-        u.email_enc, u.phone_enc,
-        u.first_name_enc, u.last_name_enc,
-        (COALESCE(u.first_name_enc,'') || ' ' || COALESCE(u.last_name_enc,'')) AS full_name_enc,
+      SELECT
+        m.contact,           -- ce que l'appelant a cherché
+        u.first_name,        -- en clair, pas *_enc
+        u.last_name,
         u.photo_url
       FROM members m
       LEFT JOIN users u ON m.user_id = u.id
       WHERE m.contact = ANY($1)
+      ORDER BY m.contact
     `;
+
     const { rows } = await pool.query(query, [uniqueContacts]);
 
+    // Ne renvoyer que le minimum nécessaire
     const users = rows.map(r => ({
-      member_id: r.member_id,
       contact: r.contact,
-      display_name: r.display_name,
-      user_id: r.user_id,
-      username: r.username,
-      email: decryptNullable(r.email_enc) ?? '',
-      phone: decryptNullable(r.phone_enc) ?? '',
-      first_name: decryptNullable(r.first_name_enc) ?? '',
-      last_name: decryptNullable(r.last_name_enc) ?? '',
-      full_name: [decryptNullable(r.first_name_enc), decryptNullable(r.last_name_enc)].filter(Boolean).join(' '),
-      photo_url: r.photo_url,
+      first_name: r.first_name ?? '',
+      last_name:  r.last_name  ?? '',
+      full_name: [r.first_name, r.last_name].filter(Boolean).join(' '),
+      photo_url: r.photo_url || null,
     }));
 
     return res.status(200).json({ users });
@@ -891,6 +972,7 @@ export const searchUserByContact = async (req: Request, res: Response) => {
     return res.status(500).json({ error: 'Erreur serveur' });
   }
 };
+
 
 
 // 1️⃣ ENVOI OTP
