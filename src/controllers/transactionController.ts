@@ -652,9 +652,7 @@ export const requestMoney = async (req: Request, res: Response) => {
     (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '';
   const user_agent = req.headers['user-agent'] || '';
 
-  if (!requesterId) {
-    return res.status(401).json({ error: 'Authentification requise.' });
-  }
+  if (!requesterId) return res.status(401).json({ error: 'Authentification requise.' });
   if (!recipientUsername || !amount || isNaN(Number(amount)) || Number(amount) <= 0) {
     return res.status(400).json({ error: 'Données invalides.' });
   }
@@ -666,12 +664,13 @@ export const requestMoney = async (req: Request, res: Response) => {
   try {
     await client.query('BEGIN');
 
-    // 🔎 Trouver le membre destinataire (email ou téléphone en clair stocké dans members.contact)
+    // 1) Trouver le membre destinataire via members.contact (email ou phone en clair)
     let memberRes;
     if (cleanedContact.includes('@')) {
-      memberRes = await client.query('SELECT id FROM members WHERE LOWER(contact) = $1', [
-        cleanedContact,
-      ]);
+      memberRes = await client.query(
+        'SELECT id FROM members WHERE LOWER(contact) = $1',
+        [cleanedContact]
+      );
     } else {
       const digits = cleanedContact.replace(/\D/g, '');
       memberRes = await client.query(
@@ -681,18 +680,18 @@ export const requestMoney = async (req: Request, res: Response) => {
         [digits, digits.slice(-8)]
       );
     }
-
     if (!memberRes.rows.length) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Destinataire introuvable ou non inscrit.' });
     }
     const memberId: string = memberRes.rows[0].id;
 
-    // 👤 User destinataire (on récupère email/phone chiffrés pour transactions.*_enc/_bidx)
+    // 2) Récupérer l’utilisateur destinataire lié à ce membre (SANS expo_push_token ici)
     const recipientUserRes = await client.query(
-      `SELECT id, first_name, last_name, email_enc, phone_enc, photo_url, expo_push_token
+      `SELECT id, first_name, last_name, email_enc, phone_enc, photo_url
          FROM users
-        WHERE member_id = $1`,
+        WHERE member_id = $1
+        LIMIT 1`,
       [memberId]
     );
     if (!recipientUserRes.rows.length) {
@@ -706,26 +705,25 @@ export const requestMoney = async (req: Request, res: Response) => {
       email_enc: string | null;
       phone_enc: string | null;
       photo_url: string | null;
-      expo_push_token?: string | null;
     };
     const recipientId = recipient.id;
 
-    // 🚫 Empêcher auto-demande
+    // Empêcher auto-demande
     if (recipientId === requesterId) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Impossible de vous faire une demande à vous-même.' });
     }
 
-    // 🔐 Préparer les champs destinataire chiffrés/BI pour la ligne transactions
-    const recEmailPlain = decryptNullable(recipient.email_enc);
-    const recPhonePlain = decryptNullable(recipient.phone_enc);
+    // 3) Préparer les champs destinataire chiffrés/BI pour transactions
+    const recEmailPlain = decryptNullable(recipient.email_enc) || null;
+    const recPhonePlain = decryptNullable(recipient.phone_enc) || null;
 
-    const recipient_email_enc = recEmailPlain ? encrypt(recEmailPlain) : null;
+    const recipient_email_enc  = recEmailPlain ? encrypt(recEmailPlain) : null;
     const recipient_email_bidx = recEmailPlain ? blindIndexEmail(recEmailPlain) : null;
-    const recipient_phone_enc = recPhonePlain ? encrypt(recPhonePlain) : null;
+    const recipient_phone_enc  = recPhonePlain ? encrypt(recPhonePlain) : null;
     const recipient_phone_bidx = recPhonePlain ? blindIndexPhone(recPhonePlain) : null;
 
-    // 🧾 Transaction "pending"
+    // 4) Créer la transaction pending
     const txId = uuidv4();
     await client.query(
       `INSERT INTO transactions (
@@ -759,37 +757,57 @@ export const requestMoney = async (req: Request, res: Response) => {
       ]
     );
 
-    // 🧾 Audit log
+    // 5) Audit
     await client.query(
       `INSERT INTO audit_logs (id, user_id, action, ip_address, user_agent, details)
        VALUES ($1, $2, $3, $4, $5, $6)`,
-      [
-        uuidv4(),
-        requesterId,
-        'request_money',
-        ip_address,
-        user_agent,
-        `Demande d’argent de ${amt} HTG à ${recipientId}`,
-      ]
+      [uuidv4(), requesterId, 'request_money', ip_address, user_agent, `Demande ${amt} HTG à user:${recipientId}`]
     );
 
-    // 🔔 Notification (en BDD)
-    await client.query(
-      `INSERT INTO notifications (
-         user_id, type, from_first_name, from_last_name, from_contact, from_profile_image, amount, status, transaction_id
-       )
-       SELECT $1, 'request', u.first_name, u.last_name, u.username, u.photo_url, $2, 'pending', $3
-         FROM users u WHERE u.id = $4`,
-      [recipientId, amt, txId, requesterId]
+    // 6) Récupérer les infos de l’expéditeur (incluant SON contact depuis members.contact)
+    const senderRes = await client.query(
+      `SELECT u.first_name, u.last_name, u.photo_url, COALESCE(m.contact,'') AS member_contact
+         FROM users u
+         LEFT JOIN members m ON m.user_id = u.id
+        WHERE u.id = $1
+        LIMIT 1`,
+      [requesterId]
     );
+    const sender = senderRes.rows[0] || {};
+    const from_contact = (sender.member_contact || '').trim(); // 👈 vient de members.contact
 
+    // 7) Notif BDD (en chiffrant côté addNotification)
+    await addNotification({
+      user_id: recipientId,                 // le destinataire reçoit la notif
+      type: 'request',
+      from_first_name: sender.first_name || '',
+      from_last_name:  sender.last_name  || '',
+      from_contact,                         // 👈 members.contact de l’expéditeur
+      from_profile_image: sender.photo_url || '',
+      amount: amt,
+      status: 'pending',
+      transaction_id: txId,
+    });
+
+    // 8) Optionnel : push uniquement si la colonne existe
+    let expoPushToken: string | null = null;
+    const { rows: hasCol } = await client.query(`
+      SELECT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema='public' AND table_name='users' AND column_name='expo_push_token'
+      ) AS has_col;
+    `);
+    if (hasCol[0]?.has_col) {
+      const tok = await client.query('SELECT expo_push_token FROM users WHERE id = $1', [recipientId]);
+      expoPushToken = tok.rows[0]?.expo_push_token ?? null;
+    }
     await client.query('COMMIT');
 
-    // ✉️ Email destinataire (asynchrone) — utilise email_enc
-    pool
-      .query('SELECT email_enc FROM users WHERE id = $1', [recipientId])
-      .then(async (r) => {
-        const emailPlain = decryptNullable(r.rows[0]?.email_enc) ?? undefined; // null -> undefined
+    // 9) Notifications asynchrones (email + push si dispo)
+    (async () => {
+      try {
+        const r = await pool.query('SELECT email_enc FROM users WHERE id = $1', [recipientId]);
+        const emailPlain = decryptNullable(r.rows[0]?.email_enc) || null;
         if (emailPlain) {
           await sendEmail({
             to: emailPlain,
@@ -797,10 +815,13 @@ export const requestMoney = async (req: Request, res: Response) => {
             text: `Vous avez reçu une demande d’argent de ${amt} HTG sur Cash Hay.`,
           });
         }
-      })
-      .catch((notifErr) => {
-        console.error('Erreur notification request:', notifErr);
-      });
+        if (expoPushToken) {
+          await sendPushNotification(expoPushToken, 'Demande d’argent', `Vous avez reçu ${amt} HTG.`);
+        }
+      } catch (e) {
+        console.error('Notif async requestMoney:', e);
+      }
+    })();
 
     return res.status(200).json({ message: 'Demande d’argent enregistrée avec succès.' });
   } catch (error) {
