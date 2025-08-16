@@ -8,6 +8,9 @@ import Stripe from 'stripe';
 import axios from 'axios';
 import { MARQETA_API_BASE, MARQETA_APP_TOKEN, MARQETA_ADMIN_TOKEN } from '../webhooks/marqeta';
 import { createMarqetaCardholder, createVirtualCard } from '../webhooks/marqetaService';
+// ⬆️ AJOUTER CES IMPORTS EN HAUT DU FICHIER (si pas déjà présents)
+import { sendEmail } from '../utils/notificationUtils';
+import { buildCardRequestReceivedEmail } from '../templates/emails/cardRequestReceivedEmail';
 
 import {
   encrypt,
@@ -275,16 +278,14 @@ export const requestPhysicalCard = async (req: Request, res: Response) => {
     if (!req.user?.id) return res.status(401).json({ error: 'Non authentifié' });
 
     const userId = req.user.id;
-    const productToken =
-      process.env.MARQETA_PHYSICAL_CARD_PRODUCT_TOKEN || '';
-
+    const productToken = process.env.MARQETA_PHYSICAL_CARD_PRODUCT_TOKEN || '';
     if (!productToken) {
       return res.status(500).json({
         error: 'Configuration manquante: MARQETA_PHYSICAL_CARD_PRODUCT_TOKEN',
       });
     }
 
-    // Profil enc
+    // 🎯 Profil (colonnes chiffrées)
     const u = await client.query(
       `SELECT
          id,
@@ -301,12 +302,12 @@ export const requestPhysicalCard = async (req: Request, res: Response) => {
     const firstName  = decryptNullable(row.first_name_enc) ?? 'User';
     const lastName   = decryptNullable(row.last_name_enc) ?? 'CashHay';
     const emailPlain = decryptNullable(row.email_enc) ?? undefined;
-    const phonePlain = decryptNullable(row.phone_enc) ?? undefined;
+    // const phonePlain = decryptNullable(row.phone_enc) ?? undefined; // dispo si besoin
 
-    // 1) Cardholder
-  const cardholderToken = await createMarqetaCardholder(userId);
+    // 1) Cardholder (Marqeta)
+    const cardholderToken = await createMarqetaCardholder(userId);
 
-    // 2) Création carte physique via API Marqeta
+    // 2) Création carte physique (Marqeta)
     const resp = await axios.post(
       `${MARQETA_API_BASE}/cards`,
       {
@@ -322,6 +323,7 @@ export const requestPhysicalCard = async (req: Request, res: Response) => {
     const last4: string | null = created?.last_four_digits || null;
     const state: string = (created?.state || 'INACTIVE').toLowerCase();
 
+    // 3) Persistance en base
     await client.query(
       `INSERT INTO cards (
          user_id,
@@ -344,6 +346,22 @@ export const requestPhysicalCard = async (req: Request, res: Response) => {
         CURRENCY_USER,
       ]
     );
+
+    // 4) Email de confirmation (best-effort, n’impacte pas la réponse)
+    if (emailPlain) {
+      try {
+        const { subject, text, html } = buildCardRequestReceivedEmail({
+          firstName,
+          // styleLabel: 'Classique Noir',       // si vous avez l’info du style
+          requestId: cardToken || undefined,     // référence visible dans l’email
+          // statusUrl: 'https://app.cash-hay.com/cards/status', // par défaut dans le template
+          // loginUrl: 'https://app.cash-hay.com/login',         // par défaut dans le template
+        });
+        await sendEmail({ to: emailPlain, subject, text, html });
+      } catch (e) {
+        console.error('⚠️ Email card request not sent:', e);
+      }
+    }
 
     return res.json({
       success: true,
@@ -632,19 +650,25 @@ export const hasCard = async (req: Request, res: Response) => {
   }
 };
 
-export const requestPhysicalCustomCard = async (req: Request & { user?: { id: string } }, res: Response) => {
+export const requestPhysicalCustomCard = async (
+  req: Request & { user?: { id: string } },
+  res: Response
+) => {
   const userId = req.user?.id;
-  const { design_url, card_type = 'custom', label = 'Carte personnalisée' }: CustomCardRequest = req.body;
+  const {
+    design_url,
+    card_type = 'custom',
+    label = 'Carte personnalisée',
+  }: CustomCardRequest = req.body;
 
   // Validation des entrées
   if (!userId) {
-    return res.status(401).json({ error: "Authentification requise." });
+    return res.status(401).json({ error: 'Authentification requise.' });
   }
-
   if (!design_url) {
-    return res.status(400).json({ 
-      error: "URL de design manquante.",
-      details: "Le champ design_url est obligatoire pour une carte personnalisée"
+    return res.status(400).json({
+      error: 'URL de design manquante.',
+      details: 'Le champ design_url est obligatoire pour une carte personnalisée',
     });
   }
 
@@ -652,78 +676,102 @@ export const requestPhysicalCustomCard = async (req: Request & { user?: { id: st
   try {
     await client.query('BEGIN');
 
-    // 1. Vérification des cartes existantes
+    // 1) Vérification d’une carte physique courante déjà en cours/active
     const existingCards = await client.query(
       `SELECT id FROM user_cards 
-       WHERE user_id = $1 AND category = 'physique' AND is_current = true
-       AND status IN ('pending', 'active')`,
+         WHERE user_id = $1 
+           AND category = 'physique' 
+           AND is_current = true
+           AND status IN ('pending', 'active')`,
       [userId]
     );
-
     if (existingCards.rows.length > 0) {
       await client.query('ROLLBACK');
-      return res.status(400).json({ 
-        error: "Demande de carte déjà en cours",
-        details: "Vous avez déjà une carte physique en attente ou active"
+      return res.status(400).json({
+        error: 'Demande de carte déjà en cours',
+        details: 'Vous avez déjà une carte physique en attente ou active',
       });
     }
 
-    // 2. Enregistrement de la demande
-    const result = await client.query(
+    // 2) Enregistrement de la demande
+    const ins = await client.query(
       `INSERT INTO user_cards (
-        user_id, design_url, type, style_id, 
-        price, status, category, is_current, label
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-      RETURNING id, created_at`,
+         user_id, design_url, type, style_id, 
+         price, status, category, is_current, label, created_at
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
+       RETURNING id, created_at`,
       [
         userId,
         design_url,
         card_type,
-        'custom', // style_id
-        0, // price - à adapter selon votre logique métier
-        'pending', // status
-        'physique',
-        true,
-        label
+        'custom',       // style_id
+        0,              // price (à adapter selon votre logique)
+        'pending',      // status
+        'physique',     // category
+        true,           // is_current
+        label,
       ]
     );
 
-    // 3. Audit log
+    // 3) Audit log
     await client.query(
       `INSERT INTO audit_logs (user_id, action, details)
        VALUES ($1, $2, $3)`,
       [
         userId,
         'custom_card_request',
-        `Nouvelle demande carte physique personnalisée (ID: ${result.rows[0].id})`
+        `Nouvelle demande carte physique personnalisée (ID: ${ins.rows[0].id})`,
       ]
     );
 
     await client.query('COMMIT');
 
-    res.status(201).json({
-      success: true,
-      message: "Demande de carte personnalisée enregistrée avec succès.",
-      card_request: {
-        id: result.rows[0].id,
-        created_at: result.rows[0].created_at,
-        status: 'pending'
-      }
-    });
+    // 4) Email de confirmation — best-effort (n’empêche pas la réussite API)
+    (async () => {
+      try {
+        const u = await pool.query(
+          `SELECT first_name_enc, email_enc FROM users WHERE id = $1`,
+          [userId]
+        );
+        const firstName = decryptNullable(u.rows[0]?.first_name_enc) ?? '';
+        const email = decryptNullable(u.rows[0]?.email_enc) ?? '';
 
+        if (email) {
+          const { subject, text, html } = buildCardRequestReceivedEmail({
+            firstName,
+            styleLabel: label,                     // affiche le libellé choisi
+            requestId: String(ins.rows[0].id),     // référence visible dans l’email
+            // statusUrl et loginUrl ont des valeurs par défaut dans le template
+          });
+          await sendEmail({ to: email, subject, text, html });
+        }
+      } catch (e) {
+        console.error('⚠️ Email card request (custom) non envoyé :', e);
+      }
+    })();
+
+    return res.status(201).json({
+      success: true,
+      message: 'Demande de carte personnalisée enregistrée avec succès.',
+      card_request: {
+        id: ins.rows[0].id,
+        created_at: ins.rows[0].created_at,
+        status: 'pending',
+      },
+    });
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error("Erreur enregistrement carte personnalisée:", err);
-    
-    const errorMessage = err instanceof Error ? err.message : "Erreur inconnue";
-    res.status(500).json({ 
-      error: "Échec de la demande de carte",
-      details: errorMessage
+    console.error('Erreur enregistrement carte personnalisée:', err);
+    const errorMessage = err instanceof Error ? err.message : 'Erreur inconnue';
+    return res.status(500).json({
+      error: 'Échec de la demande de carte',
+      details: errorMessage,
     });
   } finally {
     client.release();
   }
 };
+
 
 export const getCardPanFromMarqeta = async (req: Request, res: Response) => {
   const { id } = req.params;

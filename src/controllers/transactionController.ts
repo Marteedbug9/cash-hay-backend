@@ -13,6 +13,11 @@ import {
   blindIndexEmail,
   blindIndexPhone,
 } from '../utils/crypto';
+import { buildMoneyReceivedEmail } from '../templates/emails/moneyReceivedEmail';
+import { buildMoneySentEmail } from '../templates/emails/moneySentEmail';
+import { buildDepositEmail } from '../templates/emails/depositEmail';
+import { buildWithdrawalEmail } from '../templates/emails/withdrawalEmail';
+
 
 // Fonction pour envoyer vers ta banque locale (ex: via API REST interne, à adapter)
 async function sendToLocalBankBusiness(accountInfo: any, amount: number) {
@@ -192,14 +197,21 @@ export const deposit = async (req: Request, res: Response) => {
   }
 
   const { amount, source = 'bank', currency = 'HTG', bank } = req.body;
-  const ip_address = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '';
+  const ip_address =
+    (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '';
   const user_agent = req.headers['user-agent'] || '';
 
   if (!amount || isNaN(amount) || amount <= 0 || !bank) {
     return res.status(400).json({ error: 'Montant ou banque invalide.' });
   }
 
+  // petit helper d’affichage
+  const formatHTG = (n: number) =>
+    `${Number(n).toLocaleString('fr-HT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} HTG`;
+
   const client = await pool.connect();
+  let txId = uuidv4();
+
   try {
     await client.query('BEGIN');
 
@@ -216,10 +228,14 @@ export const deposit = async (req: Request, res: Response) => {
       `UPDATE balances SET amount = amount + $1, updated_at = NOW() WHERE user_id = $2`,
       [amount, userId]
     );
-    const txId = uuidv4();
+
+    // ID de transaction (on utilise la valeur générée plus haut)
     await client.query(
-      `INSERT INTO transactions (id, user_id, type, amount, currency, source, status, ip_address, user_agent, created_at)
-       VALUES ($1, $2, 'deposit', $3, $4, $5, 'completed', $6, $7, NOW())`,
+      `INSERT INTO transactions (
+         id, user_id, type, amount, currency, source, status, ip_address, user_agent, created_at
+       ) VALUES (
+         $1, $2, 'deposit', $3, $4, $5, 'completed', $6, $7, NOW()
+       )`,
       [txId, userId, amount, currency, source, ip_address, user_agent]
     );
 
@@ -227,35 +243,60 @@ export const deposit = async (req: Request, res: Response) => {
     await client.query(
       `INSERT INTO audit_logs (id, user_id, action, ip_address, user_agent, details)
        VALUES ($1, $2, $3, $4, $5, $6)`,
-      [uuidv4(), userId, 'deposit', ip_address, user_agent, `Dépot de ${amount} ${currency} depuis ${bank.bank}`]
+      [uuidv4(), userId, 'deposit', ip_address, user_agent, `Dépôt de ${amount} ${currency} depuis ${bank.bank}`]
     );
 
     await client.query('COMMIT');
     client.release();
 
-    // 4️⃣ Notification email (async)
-    try {
-  const userRes = await pool.query('SELECT email_enc FROM users WHERE id = $1', [userId]);
-  const email = decryptNullable(userRes.rows[0]?.email_enc);
-  if (email) {
-    await sendEmail({
-      to: email,
-      subject: "Dépôt confirmé - Cash Hay",
-      text: `Votre dépôt de ${amount} HTG a bien été reçu et crédité sur votre compte Cash Hay.`
-    });
-  }
-} catch (notifErr) {
-  console.error("Erreur notif dépôt:", notifErr);
-}
+    // 4️⃣ Notification email (async, avec template HTML)
+    (async () => {
+      try {
+        // Récup infos user + solde après crédit
+        const [userRes, balRes] = await Promise.all([
+          pool.query(`SELECT first_name, first_name_enc, email_enc FROM users WHERE id = $1`, [userId]),
+          pool.query(`SELECT amount FROM balances WHERE user_id = $1`, [userId]),
+        ]);
 
-    res.status(200).json({ message: 'Dépôt effectué avec succès.', amount });
+        const row = userRes.rows[0] || {};
+        const firstName =
+  ((row.first_name as string | null) ?? decryptNullable(row.first_name_enc)) ?? '';
+
+        const email = decryptNullable(row.email_enc);
+
+        const balanceAfter = Number(balRes.rows[0]?.amount || 0);
+
+        if (email) {
+          const { subject, text, html } = buildDepositEmail({
+            firstName,
+            amountLabel: formatHTG(Number(amount)),
+            balanceAfterLabel: formatHTG(balanceAfter),
+            txRef: txId.split('-')[0].toUpperCase(), // petite réf lisible
+            loginUrl: process.env.APP_LOGIN_URL || 'https://app.cash-hay.com/login',
+          });
+
+          // si le typage de sendEmail n'inclut pas html, on caste en any pour éviter une erreur TS
+          await (sendEmail as any)({
+            to: email,
+            subject,
+            text,
+            html,
+          });
+        }
+      } catch (notifErr) {
+        console.error('Erreur notif dépôt (email):', notifErr);
+      }
+    })();
+
+    return res.status(200).json({ message: 'Dépôt effectué avec succès.', amount });
   } catch (error: any) {
     await client.query('ROLLBACK');
     client.release();
     console.error('❌ Erreur dépôt :', error.message);
-    res.status(500).json({ error: 'Erreur serveur.' });
+    return res.status(500).json({ error: 'Erreur serveur.' });
   }
 };
+
 
 
 export const withdraw = async (req: Request, res: Response) => {
@@ -282,9 +323,9 @@ export const withdraw = async (req: Request, res: Response) => {
     }
 
     // 2️⃣ Vérifie la carte Stripe liée à la banque choisie
-    let stripeCardId = null;
+    let stripeCardId: string | null = null;
     if (bank.type === 'card') {
-      stripeCardId = bank.stripe_card_id; // doit être fourni par le frontend si dispo
+      stripeCardId = bank.stripe_card_id || null; // peut venir du front
 
       // Fallback DB si non fourni
       if (!stripeCardId) {
@@ -292,7 +333,7 @@ export const withdraw = async (req: Request, res: Response) => {
           'SELECT stripe_card_id FROM cards WHERE id = $1 AND user_id = $2 AND status = $3',
           [bank.id, userId, 'active']
         );
-        stripeCardId = cardRes.rows[0]?.stripe_card_id;
+        stripeCardId = cardRes.rows[0]?.stripe_card_id ?? null;
         if (!stripeCardId) {
           await client.query('ROLLBACK');
           return res.status(404).json({ error: "Carte Stripe non trouvée." });
@@ -309,15 +350,14 @@ export const withdraw = async (req: Request, res: Response) => {
       }
 
       // Blocked categories (MCC)
-      const blocked = card.spending_controls?.blocked_categories || [];
-      if (blocked.some(mcc => WITHDRAWAL_MCCS.includes(mcc))) {
+      const blocked = card.spending_controls?.blocked_categories ?? [];
+      if (blocked.some((mcc: string) => WITHDRAWAL_MCCS.includes(mcc))) {
         await client.query('ROLLBACK');
         return res.status(400).json({ error: "Carte bloquée pour retrait ou transfert." });
       }
 
-      // 4️⃣ (Optionnel) Vérifie le plafond restant (daily_spend_limit, monthly, etc)
-      //    Tu peux aussi créer une authorization test de 1 USD ou du montant
-      //    Mais pour Stripe Issuing, le retrait se fait via le terminal du partenaire bancaire.
+      // 4️⃣ (Optionnel) Vérifie le plafond restant (daily_spend_limit, etc.)
+      // ... si besoin
     }
 
     // 5️⃣ Déduit le solde interne
@@ -343,21 +383,51 @@ export const withdraw = async (req: Request, res: Response) => {
     );
 
     await client.query('COMMIT');
-    res.json({ message: 'Retrait en cours de traitement. Vous serez notifié.' });
+
+    // 8️⃣ Email de confirmation (asynchrone, après commit)
+    (async () => {
+      try {
+        const uRes = await pool.query(
+          `SELECT first_name, first_name_enc, email_enc FROM users WHERE id = $1 LIMIT 1`,
+          [userId]
+        );
+        const row = uRes.rows[0] || {};
+        const email = decryptNullable(row.email_enc);
+        // Pas de mix '??' et '||'
+        const firstName =
+          ((row.first_name as string | null) ?? decryptNullable(row.first_name_enc)) ?? '';
+
+        if (email) {
+          const amountLabel = `${Number(amount)} HTG`;
+         const { subject, text, html } = buildWithdrawalEmail({
+  firstName,
+  amountLabel,
+  loginUrl: process.env.APP_LOGIN_URL || 'https://app.cash-hay.com/login',
+});
+          await sendEmail({ to: email, subject, text, html });
+        }
+      } catch (e) {
+        console.error('Erreur notification retrait:', e);
+      }
+    })();
+
+    return res.json({ message: 'Retrait en cours de traitement. Vous serez notifié.' });
 
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('Erreur retrait:', err);
-    res.status(500).json({ error: "Erreur lors du retrait." });
+    return res.status(500).json({ error: "Erreur lors du retrait." });
   } finally {
     client.release();
   }
 };
 
+
 export const transfer = async (req: Request, res: Response) => {
   const senderId = req.user?.id;
   const { recipientUsername, amount } = req.body as { recipientUsername: string; amount: number };
   const transferFee = 0.57;
+
   const ip_address =
     (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '';
   const user_agent = req.headers['user-agent'] || '';
@@ -371,17 +441,15 @@ export const transfer = async (req: Request, res: Response) => {
 
   const amt = Number(amount);
   const client = await pool.connect();
+
   try {
     await client.query('BEGIN');
 
-    // 🔎 Trouver le membre destinataire via email ou téléphone
+    // 🔎 Trouver le membre destinataire (email/téléphone en clair dans members.contact)
     const cleanedContact = recipientUsername.trim().toLowerCase();
     let memberRes;
     if (cleanedContact.includes('@')) {
-      memberRes = await client.query(
-        'SELECT id FROM members WHERE LOWER(contact) = $1',
-        [cleanedContact]
-      );
+      memberRes = await client.query('SELECT id FROM members WHERE LOWER(contact) = $1', [cleanedContact]);
     } else {
       const digits = cleanedContact.replace(/\D/g, '');
       memberRes = await client.query(
@@ -391,30 +459,24 @@ export const transfer = async (req: Request, res: Response) => {
         [digits, digits.slice(-8)]
       );
     }
-
     if (!memberRes.rows.length) {
       await client.query('ROLLBACK');
-      return res
-        .status(404)
-        .json({ error: 'Destinataire introuvable ou non inscrit.' });
+      return res.status(404).json({ error: 'Destinataire introuvable ou non inscrit.' });
     }
-
     const memberId: string = memberRes.rows[0].id;
 
-    // 👤 User destinataire (on récupère aussi email/phone chiffrés pour la transaction + notif)
+    // 👤 Récupérer l’utilisateur destinataire
     const recipientUserRes = await client.query(
       `SELECT id, first_name, last_name, email_enc, phone_enc, expo_push_token
          FROM users
-        WHERE member_id = $1`,
+        WHERE member_id = $1
+        LIMIT 1`,
       [memberId]
     );
     if (!recipientUserRes.rows.length) {
       await client.query('ROLLBACK');
-      return res
-        .status(404)
-        .json({ error: 'Aucun utilisateur lié à ce membre.' });
+      return res.status(404).json({ error: 'Aucun utilisateur lié à ce membre.' });
     }
-
     const recipientUser = recipientUserRes.rows[0] as {
       id: string;
       first_name: string | null;
@@ -425,21 +487,19 @@ export const transfer = async (req: Request, res: Response) => {
     };
     const recipientId = recipientUser.id;
 
-    // 🚫 Empêcher l’auto-transfert
+    // 🚫 Auto-transfert interdit
     if (recipientId === senderId) {
       await client.query('ROLLBACK');
-      return res
-        .status(400)
-        .json({ error: 'Impossible de vous envoyer de l’argent à vous-même.' });
+      return res.status(400).json({ error: 'Impossible de vous envoyer de l’argent à vous-même.' });
     }
 
-    // 💳 (Optionnel) carte Stripe active de l’émetteur — conservée pour audit
+    // 💳 (Optionnel) carte Stripe active (audit)
     await client.query(
       'SELECT stripe_card_id FROM cards WHERE user_id = $1 AND status = $2 LIMIT 1',
       [senderId, 'active']
-    ); // valeur non utilisée directement
+    );
 
-    // 💰 Vérifie balance + frais
+    // 💰 Vérifie solde + frais
     const senderBalanceRes = await client.query(
       'SELECT amount FROM balances WHERE user_id = $1 FOR UPDATE',
       [senderId]
@@ -447,34 +507,21 @@ export const transfer = async (req: Request, res: Response) => {
     const senderBalance = parseFloat(senderBalanceRes.rows[0]?.amount || '0');
     if (senderBalance < amt + transferFee) {
       await client.query('ROLLBACK');
-      return res
-        .status(400)
-        .json({ error: 'Fonds insuffisants (incluant les frais).' });
+      return res.status(400).json({ error: 'Fonds insuffisants (incluant les frais).' });
     }
 
-    // 🔀 Débit/crédit wallet internes
-    await client.query('UPDATE balances SET amount = amount - $1 WHERE user_id = $2', [
-      amt + transferFee,
-      senderId,
-    ]);
-    await client.query('UPDATE balances SET amount = amount + $1 WHERE user_id = $2', [
-      amt,
-      recipientId,
-    ]);
+    // 🔀 Mouvements wallets
+    await client.query('UPDATE balances SET amount = amount - $1 WHERE user_id = $2', [amt + transferFee, senderId]);
+    await client.query('UPDATE balances SET amount = amount + $1 WHERE user_id = $2', [amt, recipientId]);
 
-    // 🔐 Préparer les champs destinataire chiffrés pour la ligne transactions
+    // 🔐 Préparer champs destinataire chiffrés pour la transaction
     const recipientEmailPlain = decryptNullable(recipientUser.email_enc);
     const recipientPhonePlain = decryptNullable(recipientUser.phone_enc);
 
-    const recipient_email_enc =
-      recipientEmailPlain ? encrypt(recipientEmailPlain) : null;
-    const recipient_email_bidx =
-      recipientEmailPlain ? blindIndexEmail(recipientEmailPlain) : null;
-
-    const recipient_phone_enc =
-      recipientPhonePlain ? encrypt(recipientPhonePlain) : null;
-    const recipient_phone_bidx =
-      recipientPhonePlain ? blindIndexPhone(recipientPhonePlain) : null;
+    const recipient_email_enc  = recipientEmailPlain ? encrypt(recipientEmailPlain) : null;
+    const recipient_email_bidx = recipientEmailPlain ? blindIndexEmail(recipientEmailPlain) : null;
+    const recipient_phone_enc  = recipientPhonePlain ? encrypt(recipientPhonePlain) : null;
+    const recipient_phone_bidx = recipientPhonePlain ? blindIndexPhone(recipientPhonePlain) : null;
 
     // 🧾 Transaction principale
     const txId = uuidv4();
@@ -513,22 +560,12 @@ export const transfer = async (req: Request, res: Response) => {
     await client.query(
       `INSERT INTO audit_logs (id, user_id, action, ip_address, user_agent, details)
        VALUES ($1, $2, $3, $4, $5, $6)`,
-      [
-        uuidv4(),
-        senderId,
-        'transfer',
-        ip_address,
-        user_agent,
-        `Transfert de ${amt} HTG à ${recipientId}`,
-      ]
+      [uuidv4(), senderId, 'transfer', ip_address, user_agent, `Transfert de ${amt} HTG à ${recipientId}`]
     );
 
     // 🧾 Frais admin
     const adminId = process.env.ADMIN_USER_ID || 'admin-id-123';
-    await client.query('UPDATE balances SET amount = amount + $1 WHERE user_id = $2', [
-      transferFee,
-      adminId,
-    ]);
+    await client.query('UPDATE balances SET amount = amount + $1 WHERE user_id = $2', [transferFee, adminId]);
     await client.query(
       `INSERT INTO transactions (
          id, user_id, type, amount, currency, recipient_id, source, status, description, ip_address, user_agent, created_at
@@ -539,31 +576,89 @@ export const transfer = async (req: Request, res: Response) => {
 
     await client.query('COMMIT');
 
-    // 🔔 Notification destinataire (email/SMS/push) — conversion null -> undefined
-    const email = decryptNullable(recipientUser.email_enc) ?? undefined;
-    const phone = decryptNullable(recipientUser.phone_enc) ?? undefined;
-    const expoPushToken = recipientUser.expo_push_token ?? undefined;
-    const firstName = recipientUser.first_name ?? undefined;
+    // ========= Notifications (méthode A) =========
 
-    try {
-      await notifyUser({
-        expoPushToken,
-        email,
-        phone,
-        title: 'Transfert reçu',
-        body: `Bonjour${firstName ? ' ' + firstName : ''}, vous avez reçu ${amt} HTG via Cash Hay.`,
-        subject: 'Transfert reçu - Cash Hay',
-        sms: `Vous avez reçu ${amt} HTG via Cash Hay.`,
+    // Récup infos expéditeur (pour email + push/SMS)
+    const senderRes = await pool.query(
+      `SELECT first_name, email_enc, phone_enc, expo_push_token FROM users WHERE id = $1`,
+      [senderId]
+    );
+    const senderRow = senderRes.rows[0] || {};
+    const senderFirst = (senderRow.first_name ?? '') as string;
+
+    const recipientFirst = (recipientUser.first_name ?? '') as string;
+
+    // Destinataire
+    const rEmail = decryptNullable(recipientUser.email_enc) ?? undefined;
+    const rPhone = decryptNullable(recipientUser.phone_enc) ?? undefined;
+    const rPush  = recipientUser.expo_push_token ?? undefined;
+
+    const recipientPayload: {
+      title: string;
+      body: string;
+      subject: string;
+      sms?: string;
+      expoPushToken?: string;
+      email?: string;
+      phone?: string;
+    } = {
+      title: 'Transfert reçu',
+      subject: 'Transfert reçu - Cash Hay',
+      body: `Bonjour${recipientFirst ? ' ' + recipientFirst : ''}, vous avez reçu ${amt} HTG via Cash Hay.`,
+      sms:  `Vous avez reçu ${amt} HTG via Cash Hay.`,
+    };
+    if (rPush)  recipientPayload.expoPushToken = rPush;
+    if (rEmail) recipientPayload.email = rEmail;
+    if (rPhone) recipientPayload.phone = rPhone;
+
+    // Expéditeur
+    const sEmail = decryptNullable(senderRow.email_enc) ?? undefined;
+    const sPhone = decryptNullable(senderRow.phone_enc) ?? undefined;
+    const sPush  = senderRow.expo_push_token ?? undefined;
+
+    const senderPayload: {
+      title: string;
+      body: string;
+      subject: string;
+      sms?: string;
+      expoPushToken?: string;
+      email?: string;
+      phone?: string;
+    } = {
+      title: 'Transfert envoyé',
+      subject: 'Transfert envoyé - Cash Hay',
+      body: `Bonjour${senderFirst ? ' ' + senderFirst : ''}, votre transfert de ${amt} HTG a été envoyé.`,
+      sms:  `Votre transfert de ${amt} HTG a été envoyé.`,
+    };
+    if (sPush)  senderPayload.expoPushToken = sPush;
+    if (sEmail) senderPayload.email = sEmail;
+    if (sPhone) senderPayload.phone = sPhone;
+
+    // Envoi push/SMS/email (utilitaire central)
+    try { await notifyUser(recipientPayload); } catch (e) { console.error('notifyUser destinataire:', e); }
+    try { await notifyUser(senderPayload);    } catch (e) { console.error('notifyUser expéditeur:', e); }
+
+    // ✉️ Emails HTML (optionnel)
+    const amountLabel = `${amt.toFixed(2)} HTG`;
+
+    if (rEmail) {
+      const tpl = buildMoneyReceivedEmail({
+        recipientFirstName: recipientFirst,
+        senderFirstName: senderFirst,
+        amountLabel,
       });
-    } catch (e) {
-      // on log seulement, la transaction est déjà validée
-      console.error('Erreur notification destinataire:', e);
+      await sendEmail({ to: rEmail, subject: 'Transfert reçu - Cash Hay', text: tpl.text, html: tpl.html });
+    }
+    if (sEmail) {
+      const tpl2 = buildMoneySentEmail({
+        senderFirstName: senderFirst,
+        recipientFirstName: recipientFirst,
+        amountLabel,
+      });
+      await sendEmail({ to: sEmail, subject: 'Transfert envoyé - Cash Hay', text: tpl2.text, html: tpl2.html });
     }
 
-    return res.status(200).json({
-      message: 'Transfert effectué avec succès.',
-      tx_id: txId,
-    });
+    return res.status(200).json({ message: 'Transfert effectué avec succès.', tx_id: txId });
   } catch (error) {
     await client.query('ROLLBACK');
     console.error('❌ Erreur lors du transfert:', error);
@@ -572,6 +667,7 @@ export const transfer = async (req: Request, res: Response) => {
     client.release();
   }
 };
+
 
 
 
@@ -837,14 +933,14 @@ export const requestMoney = async (req: Request, res: Response) => {
 
 
 export const acceptRequest = async (req: Request, res: Response) => {
-  const userId = req.user?.id;
-  const { id } = req.params; // notification id
+  const userId = req.user?.id;       // payeur (celui qui accepte et paie)
+  const { id } = req.params;         // notification id
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    // 1️⃣ Récupérer la notification
+    // 1️⃣ Récupérer la notification (pending)
     const notifRes = await client.query(
       `SELECT * FROM notifications WHERE id = $1 AND user_id = $2 AND status = 'pending'`,
       [id, userId]
@@ -856,7 +952,7 @@ export const acceptRequest = async (req: Request, res: Response) => {
     }
     const { transaction_id, amount } = notification;
 
-    // 2️⃣ Récupérer la transaction
+    // 2️⃣ Transaction concernée (pending)
     const txRes = await client.query(
       `SELECT * FROM transactions WHERE id = $1 AND status = 'pending'`,
       [transaction_id]
@@ -867,14 +963,15 @@ export const acceptRequest = async (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Transaction introuvable ou déjà traitée.' });
     }
 
-    // 3️⃣ Vérifier le solde interne (en attente de débit Stripe pour verrouiller)
+    // 3️⃣ Vérifier solde du payeur (userId)
     const balanceRes = await client.query(
       `SELECT amount FROM balances WHERE user_id = $1 FOR UPDATE`,
       [userId]
     );
     const currentBalance = parseFloat(balanceRes.rows[0]?.amount || '0');
-    const tax = 0.57;
-    const totalToDeduct = parseFloat(amount) + tax;
+    const fee = 0.57;
+    const amtNum = parseFloat(amount);
+    const totalToDeduct = amtNum + fee;
     if (currentBalance < totalToDeduct) {
       await client.query('ROLLBACK');
       return res.status(400).json({
@@ -882,69 +979,137 @@ export const acceptRequest = async (req: Request, res: Response) => {
       });
     }
 
-    // 4️⃣ Chercher la carte Stripe active du payeur
+    // 4️⃣ (Optionnel) Carte Stripe active (payeur)
     const cardRes = await client.query(
       'SELECT stripe_card_id FROM cards WHERE user_id = $1 AND status = $2 LIMIT 1',
       [userId, 'active']
     );
     if (!cardRes.rows.length) {
       await client.query('ROLLBACK');
-      return res.status(400).json({ error: "Aucune carte Stripe active trouvée." });
+      return res.status(400).json({ error: 'Aucune carte Stripe active trouvée.' });
     }
-    const stripeCardId = cardRes.rows[0].stripe_card_id;
+    // const stripeCardId = cardRes.rows[0].stripe_card_id; // non utilisé si on n’appelle pas Stripe ici
 
-    // 5️⃣ Stripe Issuing Authorization (débit à confirmer dans webhook)
-    let authorizationId: string | null = null;
-    try {
-      // On utilise stripe.issuing.authorizations.create SEULEMENT si supporté par ta version Stripe !
-      // Si tu as l’erreur “create does not exist”, il faut juste ENREGISTRER l’intention dans ta BDD
-      // et laisser Stripe t’envoyer le webhook (dans ce cas, ne pas appeler la méthode ici).
-      // Ici, on IMITE l’appel Stripe, sinon saute cette étape.
-
-      // await stripe.issuing.authorizations.create({
-      //   amount: Math.round(parseFloat(amount) * 100),
-      //   currency: 'usd',
-      //   card: stripeCardId,
-      //   merchant_data: {
-      //     merchant_category_code: '4829',
-      //     name: "Cash Hay P2P Request",
-      //   },
-      // });
-      // authorizationId = authorization.id;
-
-      // Tu peux aussi juste enregistrer dans la transaction qu'on attend un paiement Stripe (sans appeler l'API ici)
-      authorizationId = null;
-    } catch (stripeErr) {
-      await client.query('ROLLBACK');
-      console.error('❌ Stripe Issuing error:', stripeErr);
-      return res.status(400).json({ error: "Paiement refusé par Stripe.", stripe_error: (stripeErr as Error).message });
-    }
-
-    // 6️⃣ Mettre à jour les statuts BDD → toujours “pending” tant que Stripe n’a pas confirmé
+    // 5️⃣ Placer en waiting_stripe
+    await client.query(`UPDATE notifications SET status = 'waiting_stripe', updated_at = NOW() WHERE id = $1`, [id]);
     await client.query(
-      `UPDATE notifications SET status = 'waiting_stripe', updated_at = NOW() WHERE id = $1`,
-      [id]
-    );
-    await client.query(
-      `UPDATE transactions SET status = 'waiting_stripe', stripe_authorization_id = $2 WHERE id = $1`,
-      [transaction_id, authorizationId]
+      `UPDATE transactions SET status = 'waiting_stripe', stripe_authorization_id = NULL WHERE id = $1`,
+      [transaction_id]
     );
 
     await client.query('COMMIT');
 
-    res.json({
-      message: 'Paiement en cours de traitement. Le bénéficiaire sera crédité dès validation Stripe.',
-      stripe_authorization_id: authorizationId
-    });
+    // ========= Notifications (méthode A) =========
+    // Payer (userId) & Demandeur (transaction.user_id)
+    const payerRes = await pool.query(
+      `SELECT first_name, email_enc, phone_enc, expo_push_token FROM users WHERE id = $1`,
+      [userId]
+    );
+    const requesterRes = await pool.query(
+      `SELECT first_name, email_enc, phone_enc, expo_push_token FROM users WHERE id = $1`,
+      [transaction.user_id]
+    );
 
+    const payer = payerRes.rows[0] || {};
+    const requester = requesterRes.rows[0] || {};
+
+    const payerFirst = (payer.first_name ?? '') as string;
+    const requesterFirst = (requester.first_name ?? '') as string;
+
+    // Email/Phone/Push sûrs
+    const payerEmail = decryptNullable(payer.email_enc) ?? undefined;
+    const payerPhone = decryptNullable(payer.phone_enc) ?? undefined;
+    const payerPush  = payer.expo_push_token ?? undefined;
+
+    const requesterEmail = decryptNullable(requester.email_enc) ?? undefined;
+    const requesterPhone = decryptNullable(requester.phone_enc) ?? undefined;
+    const requesterPush  = requester.expo_push_token ?? undefined;
+
+    // Payload payer (confirmation d’acceptation en cours)
+    const payerPayload: {
+      title: string;
+      body: string;
+      subject: string;
+      sms?: string;
+      expoPushToken?: string;
+      email?: string;
+      phone?: string;
+    } = {
+      title: 'Demande acceptée',
+      subject: 'Votre paiement est en cours (Cash Hay)',
+      body: `Bonjour${payerFirst ? ' ' + payerFirst : ''}, votre paiement de ${amtNum} HTG est en cours de traitement.`,
+      sms:  `Votre paiement de ${amtNum} HTG est en cours.`,
+    };
+    if (payerPush)  payerPayload.expoPushToken = payerPush;
+    if (payerEmail) payerPayload.email = payerEmail;
+    if (payerPhone) payerPayload.phone = payerPhone;
+
+    // Payload demandeur (info : acceptée, en cours)
+    const requesterPayload: {
+      title: string;
+      body: string;
+      subject: string;
+      sms?: string;
+      expoPushToken?: string;
+      email?: string;
+      phone?: string;
+    } = {
+      title: 'Demande acceptée',
+      subject: 'Demande acceptée – en cours (Cash Hay)',
+      body: `Bonjour${requesterFirst ? ' ' + requesterFirst : ''}, votre demande de ${amtNum} HTG a été acceptée. Crédits en cours.`,
+      sms:  `Votre demande de ${amtNum} HTG a été acceptée.`,
+    };
+    if (requesterPush)  requesterPayload.expoPushToken = requesterPush;
+    if (requesterEmail) requesterPayload.email = requesterEmail;
+    if (requesterPhone) requesterPayload.phone = requesterPhone;
+
+    try { await notifyUser(payerPayload);     } catch (e) { console.error('notifyUser payer:', e); }
+    try { await notifyUser(requesterPayload); } catch (e) { console.error('notifyUser requester:', e); }
+
+    // ✉️ Emails HTML optionnels (mêmes templates que transfert, libellés "en cours")
+    const amountLabel = `${amtNum.toFixed(2)} HTG`;
+
+    if (requesterEmail) {
+      const tplR = buildMoneyReceivedEmail({
+        recipientFirstName: requesterFirst,
+        senderFirstName: payerFirst,
+        amountLabel,
+      });
+      await sendEmail({
+        to: requesterEmail,
+        subject: 'Demande acceptée – en cours de traitement (Cash Hay)',
+        text: tplR.text,
+        html: tplR.html,
+      });
+    }
+    if (payerEmail) {
+      const tplS = buildMoneySentEmail({
+        senderFirstName: payerFirst,
+        recipientFirstName: requesterFirst,
+        amountLabel,
+      });
+      await sendEmail({
+        to: payerEmail,
+        subject: 'Votre paiement est en cours (Cash Hay)',
+        text: tplS.text,
+        html: tplS.html,
+      });
+    }
+
+    return res.json({
+      message: 'Paiement en cours de traitement. Le bénéficiaire sera crédité dès validation Stripe.',
+      stripe_authorization_id: null
+    });
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('❌ Erreur acceptRequest :', err);
-    res.status(500).json({ error: 'Erreur lors de l’acceptation de la demande.' });
+    return res.status(500).json({ error: 'Erreur lors de l’acceptation de la demande.' });
   } finally {
     client.release();
   }
 };
+
+
 
 
 

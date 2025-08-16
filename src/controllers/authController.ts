@@ -13,6 +13,8 @@ import { CardStatus, CardType } from '../constants/card';
 import { encrypt, encryptNullable, decryptNullable, blindIndexEmail, blindIndexPhone } from '../utils/crypto';
 import type { File as MulterFile } from 'multer';
 import { sha256Hex } from '../utils/security';
+import { buildWelcomeEmail } from '../templates/emails/welcomeEmail';
+
 
 
 
@@ -109,31 +111,36 @@ export const register = async (req: Request, res: Response) => {
   const usernameRegex = /^[a-zA-Z0-9@#%&._-]{3,30}$/;
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-  if (!username || !usernameRegex.test(username))
+  if (!username || !usernameRegex.test(username)) {
     return res.status(400).json({ error: "Nom d’utilisateur invalide." });
-
-  if (!email || !emailRegex.test(email))
+  }
+  if (!email || !emailRegex.test(email)) {
     return res.status(400).json({ error: 'Email invalide.' });
-
-  if (accept_terms !== true)
+  }
+  if (accept_terms !== true) {
     return res.status(400).json({ error: 'Vous devez accepter les conditions.' });
-
-  if (!password || String(password).length < 8)
+  }
+  if (!password || String(password).length < 8) {
     return res.status(400).json({ error: 'Mot de passe trop court (min. 8 caractères).' });
+  }
 
   const required = {
     first_name, last_name, gender, address, city, department, country,
     phone, birth_date, birth_country, id_type, id_number, id_issue_date, id_expiry_date,
   };
   for (const [k, v] of Object.entries(required)) {
-    if (v == null || v === '') return res.status(400).json({ error: `Le champ "${k}" est requis.` });
+    if (v == null || v === '') {
+      return res.status(400).json({ error: `Le champ "${k}" est requis.` });
+    }
   }
 
   const client = await pool.connect();
   try {
-    // 🔒 préparer chiffrage / index aveugle
-    const emailBidx = blindIndexEmail(email);
-    const phoneBidx = blindIndexPhone(phone);
+    // 🔒 préparer chiffrage / index aveugle (normalisés)
+    const emailNorm = String(email).trim().toLowerCase();
+    const phoneNorm = String(phone);
+    const emailBidx = blindIndexEmail(emailNorm);
+    const phoneBidx = blindIndexPhone(phoneNorm);
 
     // doublons via bidx + username
     const dupe = await client.query(
@@ -146,9 +153,9 @@ export const register = async (req: Request, res: Response) => {
 
     await client.query('BEGIN');
 
-    const userId = uuidv4();
+    const userId   = uuidv4();
     const memberId = uuidv4();
-    const cardId = uuidv4();
+    const cardId   = uuidv4();
     const hashedPassword = await bcrypt.hash(String(password), 10);
 
     // Pour récupération de compte : on stocke hash seulement
@@ -191,16 +198,16 @@ export const register = async (req: Request, res: Response) => {
         first_name, last_name,
         gender,
         address, city, department, zip_code, country,
-        email,      encrypt(email), emailBidx,
-        phone,      encrypt(phone), phoneBidx,
+        emailNorm,  encrypt(emailNorm), emailBidx,
+        phoneNorm,  encrypt(phoneNorm), phoneBidx,
         birth_date, birth_country,
-        id_type,    id_number,      encrypt(id_number), id_issue_date, id_expiry_date,
-        hashedPassword, 'user', true,
+        id_type,    id_number,          encrypt(id_number), id_issue_date, id_expiry_date,
+        hashedPassword, 'user', true, // accept_terms validé plus haut
         recoveryCode, recoveryCodeHash,
       ]
     );
 
-    // 2) CARDS
+    // 2) CARDS (placeholder legacy)
     const legacyNumber = '42' + Math.floor(100000000000 + Math.random() * 900000000000);
     const now = new Date();
     const expiry = `${String(now.getMonth() + 1).padStart(2, '0')}/${String(now.getFullYear() + 4).slice(2)}`;
@@ -214,7 +221,7 @@ export const register = async (req: Request, res: Response) => {
     // 3) BALANCES
     await client.query('INSERT INTO balances (user_id, amount) VALUES ($1, $2)', [userId, 0]);
 
-    // 4) MEMBERS
+    // 4) MEMBERS (contact non défini ici ; pourra être complété plus tard)
     await client.query(
       `INSERT INTO members (id, user_id, display_name, created_at, updated_at)
        VALUES ($1,$2,$3,NOW(),NOW())`,
@@ -230,20 +237,37 @@ export const register = async (req: Request, res: Response) => {
 
     await client.query('COMMIT');
 
-    // notifications post-commit (best-effort)
-    try {
-      await sendEmail({
-        to: email,
-        subject: 'Bienvenue sur Cash Hay',
-        text: `Bonjour ${first_name}, votre compte a été créé. Complétez la vérification d'identité pour activer votre carte.`
-      });
-    } catch (e) { console.error('⚠️ Email non envoyé :', e); }
-    try {
-      await sendSMS(phone, `Bienvenue ${first_name} ! Complétez votre vérification d’identité pour activer votre carte Cash Hay.`);
-    } catch (e) { console.error('⚠️ SMS non envoyé :', e); }
+    // ✅ notifications post-commit (best-effort, non bloquant)
+    const reward  = Number(process.env.WELCOME_REWARD_HTG ?? '25');
+    const loginUrl = process.env.APP_LOGIN_URL || 'https://app.cash-hay.com/login';
+
+    void (async () => {
+      // Email HTML de bienvenue
+      try {
+        const { subject, text, html } = buildWelcomeEmail({
+          firstName: first_name ?? '',
+          loginUrl,
+          reward,
+        });
+        await sendEmail({ to: emailNorm, subject, text, html });
+        console.log('📨 Email de bienvenue envoyé à', emailNorm);
+      } catch (e) {
+        console.warn('⚠️ Email de bienvenue non envoyé :', (e as any)?.message || e);
+      }
+
+      // SMS court de bienvenue (optionnel)
+      try {
+        await sendSMS(
+          phoneNorm,
+          `Bienvenue ${first_name}! Connectez-vous: ${loginUrl}. Votre identité doit encore être validée pour activer le compte.`
+        );
+      } catch (e) {
+        console.warn('⚠️ SMS bienvenue non envoyé :', (e as any)?.message || e);
+      }
+    })();
 
     return res.status(201).json({
-      user: { id: userId, email, first_name, last_name, username }
+      user: { id: userId, email: emailNorm, first_name, last_name, username }
     });
   } catch (err: any) {
     try { await client.query('ROLLBACK'); } catch {}
@@ -257,6 +281,7 @@ export const register = async (req: Request, res: Response) => {
     client.release();
   }
 };
+
 
 
 

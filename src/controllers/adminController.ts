@@ -9,6 +9,8 @@ import { addressFingerprint } from '../utils/address';
 import * as marqetaService from '../webhooks/marqetaService';
 import { generateMockCardNumber, generateExpiryDate, generateCVV } from '../utils/cardUtils';
 import { encrypt, decryptNullable } from '../utils/crypto';
+import { buildIdentityValidatedEmail } from '../templates/emails/identityValidatedEmail';
+import { sendEmail } from '../utils/notificationUtils'; // ajuste le chemin si besoin
 
 /* =========================
  * MARQETA: Produits de cartes
@@ -227,64 +229,48 @@ export const validateIdentity = async (req: Request, res: Response) => {
   try {
     console.log("🔍 Démarrage de la validation d'identité pour l'utilisateur ID:", id);
 
-    // 1. Utilisateur existe ?
+    // 1) Utilisateur
     const userRes = await pool.query(`SELECT * FROM users WHERE id = $1`, [id]);
     if (userRes.rowCount === 0) {
-      console.warn("❌ Utilisateur non trouvé avec l'ID:", id);
       return res.status(404).json({ error: 'Utilisateur non trouvé.' });
     }
     const user = userRes.rows[0];
-    console.log("✅ Utilisateur trouvé:", user.username || user.id);
 
-    // 2. Déjà validé ?
+    // 2) Déjà validé ?
     if (user.identity_verified) {
-      console.warn("⚠️ Identité déjà validée pour:", user.id);
       return res.status(400).json({ error: "L'identité a déjà été validée." });
     }
 
-    // 3. Carte virtuelle déjà existante ?
+    // 3) Carte virtuelle déjà existante ?
     const cardCheck = await pool.query(
       `SELECT 1 FROM cards WHERE user_id = $1 AND type = 'virtual'`,
       [id]
     );
-    if (cardCheck?.rowCount && cardCheck.rowCount > 0) {
-      console.warn("⚠️ Carte virtuelle déjà existante pour l'utilisateur:", id);
+    if (cardCheck.rowCount && cardCheck.rowCount > 0) {
       return res.status(400).json({ error: "Carte virtuelle déjà existante pour cet utilisateur." });
     }
 
-    // 4. Mise à jour locale
+    // 4) Mise à jour de l’état local
     await pool.query(
-      `
-      UPDATE users 
-      SET is_verified = true, identity_verified = true, verified_at = NOW()
-      WHERE id = $1
-      `,
+      `UPDATE users SET is_verified = true, identity_verified = true, verified_at = NOW() WHERE id = $1`,
       [id]
     );
-    console.log('✅ Identité mise à jour localement.');
 
-    // 5. Cardholder Marqeta
+    // 5) Cardholder Marqeta
     const cardholderToken = await marqetaService.createMarqetaCardholder(id);
-    console.log('🟢 Cardholder créé avec Marqeta:', cardholderToken);
 
-    // 6. Carte virtuelle Marqeta
+    // 6) Carte virtuelle Marqeta
     const card = await marqetaService.createVirtualCard(cardholderToken);
-    console.log('🟢 Réponse de création de carte virtuelle Marqeta:', card);
-
     if (!card || !card.token) {
-      console.error('❌ Erreur: Carte non créée correctement.');
-      return res.status(500).json({
-        error: 'Échec de création de carte virtuelle.',
-        detail: card,
-      });
+      return res.status(500).json({ error: 'Échec de création de carte virtuelle.' });
     }
 
-    // 7. Génère infos fictives pour affichage backoffice
-    const cardNumber = generateMockCardNumber();
-    const expiryDate = generateExpiryDate();
-    const cvv = generateCVV();
+    // 7) Données d’affichage (mock)
+    const cardNumber  = generateMockCardNumber();
+    const expiryDate  = generateExpiryDate();
+    const cvv         = generateCVV();
 
-    // 8. Enregistre DB
+    // 8) Persist carte en DB
     await pool.query(
       `
       INSERT INTO cards (
@@ -306,17 +292,50 @@ export const validateIdentity = async (req: Request, res: Response) => {
         card.last_four_digits,
         cardNumber,
         expiryDate,
-        JSON.stringify({ cvv }), // NOTE: démo. En prod, chiffrer si conservation.
+        JSON.stringify({ cvv }) // (démo)
       ]
     );
-    console.log('✅ Carte virtuelle enregistrée dans la base de données.');
 
+    // 9) 📧 EMAIL UNIQUE “Identité validée”
+    try {
+      const emailPlain =
+        decryptNullable(user.email_enc) ??
+        user.email ??
+        null;
+
+      const firstName =
+        decryptNullable(user.first_name_enc) ??
+        user.first_name ??
+        '';
+
+      const lastName =
+        decryptNullable(user.last_name_enc) ??
+        user.last_name ??
+        '';
+
+      if (emailPlain) {
+        const { subject, text, html } = buildIdentityValidatedEmail({
+          firstName,
+          lastName,
+          loginUrl: process.env.APP_LOGIN_URL || 'https://app.cash-hay.com/login',
+          reward: Number(process.env.WELCOME_REWARD_HTG ?? '25'),
+        });
+        await sendEmail({ to: emailPlain, subject, text, html });
+      } else {
+        console.warn(`⚠️ Aucun email en clair disponible pour l’utilisateur ${id}, email non envoyé.`);
+      }
+    } catch (mailErr) {
+      // on ne bloque pas la réussite métier si l’email échoue
+      console.error('⚠️ Envoi email identité validée échoué :', mailErr);
+    }
+
+    // 10) Réponse API
     return res.status(200).json({
       success: true,
       message: 'Identité validée et carte virtuelle créée avec succès.',
       card: {
-        token: card.token,
-        last4: card.last_four_digits,
+        token:  card.token,
+        last4:  card.last_four_digits,
         status: card.state,
         cardNumber,
         expiryDate,
