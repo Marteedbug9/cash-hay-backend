@@ -1,15 +1,12 @@
 import { Request, Response } from 'express';
 import pool from '../config/db';
-import db from '../config/db';
 import { CardStatus, CardType, CardCategory, DEFAULT_CURRENCY,
   DEFAULT_SPENDING_LIMIT, } from '../constants/card';
-import stripe from '../config/stripe';
-import Stripe from 'stripe';
 import axios from 'axios';
 import { MARQETA_API_BASE, MARQETA_APP_TOKEN, MARQETA_ADMIN_TOKEN } from '../webhooks/marqeta';
 import { createMarqetaCardholder, createVirtualCard } from '../webhooks/marqetaService';
 // ⬆️ AJOUTER CES IMPORTS EN HAUT DU FICHIER (si pas déjà présents)
-import { sendEmail } from '../utils/notificationUtils';
+import sendEmail from '../utils/sendEmail';
 import { buildCardRequestReceivedEmail } from '../templates/emails/cardRequestReceivedEmail';
 
 import {
@@ -774,30 +771,39 @@ export const requestPhysicalCustomCard = async (
 
 
 export const getCardPanFromMarqeta = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params; // <-- id interne de ta table cards
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: 'Non authentifié' });
 
     const result = await pool.query(
-      'SELECT * FROM cards WHERE id = $1 AND user_id = $2',
+      'SELECT marqeta_card_token, user_id FROM cards WHERE id = $1 AND user_id = $2',
       [id, userId]
     );
     if (result.rows.length === 0) {
       return res.status(403).json({ error: 'Accès interdit à cette carte' });
     }
 
+    const token = result.rows[0].marqeta_card_token;
+    if (!token) {
+      return res.status(400).json({ error: 'Carte non liée à Marqeta.' });
+    }
+
     const response = await axios.get(
-      `${MARQETA_API_BASE}/cards/${id}/pan`,
+      `${MARQETA_API_BASE}/cards/${token}/pan`,
       { auth: MARQETA_AUTH }
     );
 
     const { pan, cvv_number, expiration } = response.data;
+
+    // ⚠️ Sécurité: ne renvoie jamais PAN/CVV en clair en prod !
+    // Ici c'est uniquement si tu es dans un espace admin ultra restreint.
     return res.json({ pan, cvv: cvv_number, expiration });
   } catch (err: any) {
     console.error('Erreur récupération PAN:', err?.response?.data || err?.message || err);
     return res.status(500).json({ error: 'Impossible de récupérer les infos de carte.' });
   }
 };
+
 
 

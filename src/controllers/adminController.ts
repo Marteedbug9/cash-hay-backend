@@ -10,7 +10,7 @@ import * as marqetaService from '../webhooks/marqetaService';
 import { generateMockCardNumber, generateExpiryDate, generateCVV } from '../utils/cardUtils';
 import { encrypt, decryptNullable } from '../utils/crypto';
 import { buildIdentityValidatedEmail } from '../templates/emails/identityValidatedEmail';
-import { sendEmail } from '../utils/notificationUtils'; // ajuste le chemin si besoin
+import sendEmail from '../utils/sendEmail';
 
 
 type MarqetaCard = {
@@ -200,14 +200,79 @@ export const getUserDetail = async (req: Request, res: Response) => {
  * ========================================== */
 export const setUserVerified = async (req: Request, res: Response) => {
   const { id } = req.params;
-  const { is_verified } = req.body;
+  const { is_verified } = req.body as { is_verified: boolean };
+
+  if (typeof is_verified !== 'boolean') {
+    return res.status(400).json({ error: 'Paramètre is_verified invalide.' });
+  }
+
   try {
-    await pool.query('UPDATE users SET is_verified = $1 WHERE id = $2', [is_verified, id]);
-    res.json({ message: `Utilisateur ${is_verified ? 'activé' : 'désactivé'} avec succès.` });
+    // On met à jour et on récupère les infos nécessaires pour l’email
+    const { rows } = await pool.query(
+      `
+      UPDATE users
+         SET is_verified = $1,
+             updated_at = NOW()
+       WHERE id = $2
+       RETURNING id,
+                 email_enc, email,
+                 first_name_enc, first_name,
+                 last_name_enc,  last_name,
+                 identity_verified
+      `,
+      [is_verified, id]
+    );
+
+    if ((rows?.length ?? 0) === 0) {
+      return res.status(404).json({ error: 'Utilisateur non trouvé.' });
+    }
+
+    // ✅ Envoi de l’email seulement lors de l’activation
+    if (is_verified === true) {
+      try {
+        const u = rows[0];
+
+        const emailPlain =
+          decryptNullable(u.email_enc) ?? u.email ?? null;
+
+        const firstName =
+          decryptNullable(u.first_name_enc) ?? u.first_name ?? '';
+
+        const lastName =
+          decryptNullable(u.last_name_enc) ?? u.last_name ?? '';
+
+        if (emailPlain) {
+          const { subject, text, html } = buildIdentityValidatedEmail({
+            firstName,
+            lastName,
+            loginUrl: process.env.APP_LOGIN_URL || 'https://app.cash-hay.com/login',
+            reward: Number(process.env.WELCOME_REWARD_HTG ?? '25'),
+          });
+
+          await sendEmail({
+            to: emailPlain,
+            subject,
+            text,
+            html,
+          });
+        } else {
+          console.warn(`⚠️ Aucun email en clair pour l’utilisateur ${id} — email non envoyé.`);
+        }
+      } catch (mailErr) {
+        // On ne bloque pas la réponse API si l’email échoue
+        console.error('⚠️ Échec envoi email (activation/validation identité) :', mailErr);
+      }
+    }
+
+    return res.json({
+      message: `Utilisateur ${is_verified ? 'activé' : 'désactivé'} avec succès.`,
+    });
   } catch (err) {
-    res.status(502).json({ error: 'Erreur serveur.' });
+    console.error('❌ setUserVerified error:', err);
+    return res.status(502).json({ error: 'Erreur serveur.' });
   }
 };
+
 
 /* ===========================
  * Liste noire / Décès
