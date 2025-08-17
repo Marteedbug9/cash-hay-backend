@@ -13,14 +13,14 @@ Vous pouvez maintenant vous connecter. Votre identité doit encore être validé
 
 Après validation, vous recevrez ${reward} HTG pour chaque personne que vous invitez.
 
-Se connecter : ${loginUrl}
+
 
 Besoin d’aide ? support@cash-hay.com
 Suivez-nous : LinkedIn / X / Instagram / Facebook
 
 © Cash Hay – Tous droits réservés`;
 
-  const html = `<!doctype html><html lang="fr"><body>... (colle <!doctype html>
+  const html = `
 <html lang="fr" style="margin:0;padding:0;">
   <body style="margin:0;padding:0;background:#FFFFFF;">
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#FFFFFF;">
@@ -31,9 +31,9 @@ Suivez-nous : LinkedIn / X / Instagram / Facebook
             <!-- Header / Logo -->
             <tr>
               <td align="center" style="padding:28px 24px 10px;">
-                <img src="https://res.cloudinary.com/dmwcxkzs3/image/upload/v1755125913/ChatGPT_Image_Jul_27_2025_01_38_46_PM_qsxzai.png"
-                     width="120" height="120" alt="Cash Hay"
-                     style="display:block;width:120px;height:120px;border:0;outline:none;text-decoration:none;border-radius:12px" />
+               <img src="cid:cashhay_logo"
+     width="120" height="120" alt="Cash Hay"
+     style="display:block;width:120px;height:120px;border:0;outline:none;text-decoration:none;border-radius:12px;-ms-interpolation-mode:bicubic;" />
               </td>
             </tr>
 
@@ -66,18 +66,7 @@ Suivez-nous : LinkedIn / X / Instagram / Facebook
             </tr>
 
             <!-- Bouton -->
-            <tr>
-              <td align="center" style="padding:18px 28px 8px;">
-                <table role="presentation" cellpadding="0" cellspacing="0">
-                  <tr>
-                    <td bgcolor="#16A34A" style="border-radius:10px;">
-                      <a href="https://app.cash-hay.com/login"
-                         style="display:inline-block;padding:12px 22px;font-family:Arial,Helvetica,sans-serif;font-size:16px;color:#FFFFFF;text-decoration:none;border-radius:10px;"
-                         target="_blank" rel="noopener">
-                        Se connecter
-                      </a>
-                    </td>
-                  </tr>
+            
                 </table>
               </td>
             </tr>
@@ -147,8 +136,7 @@ Suivez-nous : LinkedIn / X / Instagram / Facebook
       </tr>
     </table>
   </body>
-</html>
- le HTML que je t’ai donné) ...</body></html>`;
+`;
 
   return { subject, text, html };
 }

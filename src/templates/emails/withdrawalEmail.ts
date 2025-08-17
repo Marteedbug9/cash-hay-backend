@@ -21,7 +21,7 @@ Votre retrait de ${amountLabel} a été exécuté depuis votre compte Cash Hay.$
 
 Merci d’avoir choisi CASH HAY. En respectant les lois, nos termes et conditions, vous serez toujours le bienvenu dans la famille. Votre argent est protégé, disponible et utilisable partout dans le monde.
 
-Se connecter : ${loginUrl}
+
 Support : support@cash-hay.com
 Suivez-nous : LinkedIn / X / Instagram / Facebook
 © Cash Hay – Tous droits réservés`;
@@ -35,9 +35,9 @@ Suivez-nous : LinkedIn / X / Instagram / Facebook
           <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;background:#FFFFFF;border-radius:14px;overflow:hidden;border:1px solid #000000;">
             <tr>
               <td align="center" style="padding:28px 24px 10px;">
-                <img src="https://res.cloudinary.com/dmwcxkzs3/image/upload/v1755125913/ChatGPT_Image_Jul_27_2025_01_38_46_PM_qsxzai.png"
-                     width="120" height="120" alt="Cash Hay"
-                     style="display:block;width:120px;height:120px;border:0;outline:none;text-decoration:none;border-radius:12px" />
+                <img src="cid:cashhay_logo"
+     width="120" height="120" alt="Cash Hay"
+     style="display:block;width:120px;height:120px;border:0;outline:none;text-decoration:none;border-radius:12px;-ms-interpolation-mode:bicubic;" />
               </td>
             </tr>
 
@@ -71,30 +71,7 @@ Suivez-nous : LinkedIn / X / Instagram / Facebook
               </td>
             </tr>
 
-            <tr>
-              <td align="center" style="padding:18px 28px 8px;">
-                <table role="presentation" cellpadding="0" cellspacing="0">
-                  <tr>
-                    <td bgcolor="#16A34A" style="border-radius:10px;">
-                      <a href="${loginUrl}"
-                         style="display:inline-block;padding:12px 22px;font-family:Arial,Helvetica,sans-serif;font-size:16px;color:#FFFFFF;text-decoration:none;border-radius:10px;"
-                         target="_blank" rel="noopener">
-                        Ouvrir mon compte
-                      </a>
-                    </td>
-                  </tr>
-                </table>
-              </td>
-            </tr>
-
-            <tr>
-              <td align="center" style="padding:6px 28px 0;">
-                <p style="margin:0;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:18px;color:#000000;">
-                  Si le bouton ne s’affiche pas, copiez-collez :<br/>
-                  <span style="color:#16A34A;">${loginUrl}</span>
-                </p>
-              </td>
-            </tr>
+           
 
             <tr>
               <td style="padding:18px 28px 6px;">

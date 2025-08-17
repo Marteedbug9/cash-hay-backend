@@ -1,20 +1,38 @@
 // src/utils/sendEmail.ts
-import nodemailer from 'nodemailer';
+import nodemailer, { SentMessageInfo } from 'nodemailer';
 import db from '../config/db';
 import { decryptNullable } from '../utils/crypto';
 
+export type EmailAttachment = {
+  filename?: string;
+  path?: string;
+  content?: any;         // Buffer | string
+  cid?: string;          // pour <img src="cid:...">
+  contentType?: string;
+  encoding?: string;
+};
+
 export interface EmailOptions {
-  // 1) adresse en clair (cas legacy)
+  // 1) adresse en clair (legacy)
   to?: string;
 
-  // 2) nouvelles façons "privacy by default"
-  toUserId?: string;      // résout users.email_enc par id
-  toEmailEnc?: string;    // déchiffre directement
-  toEmailBidx?: string;   // résout via users.email_bidx → email_enc
+  // 2) privacy by default
+  toUserId?: string;     // users.email_enc via id
+  toEmailEnc?: string;   // déchiffre directement
+  toEmailBidx?: string;  // users.email_bidx -> email_enc
 
   subject: string;
   text?: string;
   html?: string;
+
+  // Nouveau : pièces jointes / en-têtes / priorité
+  attachments?: EmailAttachment[];
+  headers?: Record<string, string>;
+  priority?: 'high' | 'normal' | 'low';
+
+  // Optionnel : override expéditeur
+  fromEmail?: string;
+  fromName?: string;
 }
 
 function maskEmailForLog(email: string): string {
@@ -25,7 +43,7 @@ function maskEmailForLog(email: string): string {
 }
 
 async function resolveEmail(opts: EmailOptions): Promise<string> {
-  // a) to en clair fourni
+  // a) to en clair
   if (opts.to && opts.to.includes('@')) return opts.to.trim();
 
   // b) via toUserId
@@ -36,7 +54,7 @@ async function resolveEmail(opts: EmailOptions): Promise<string> {
     );
     const enc = rows[0]?.email_enc ?? null;
     const plain = enc ? decryptNullable(enc) : null;
-    if (plain && plain.includes('@')) return plain;
+    if (plain && plain.includes('@')) return plain.trim();
   }
 
   // c) via toEmailEnc
@@ -61,35 +79,50 @@ async function resolveEmail(opts: EmailOptions): Promise<string> {
   );
 }
 
-const sendEmail = async (options: EmailOptions): Promise<void> => {
-  const user = process.env.EMAIL_USER;
-  const pass = process.env.EMAIL_PASS;
+const sendEmail = async (options: EmailOptions): Promise<SentMessageInfo> => {
+  const smtpUser = process.env.EMAIL_USER;
+  const smtpPass = process.env.EMAIL_PASS;
 
-  if (!user || !pass) {
+  if (!smtpUser || !smtpPass) {
     throw new Error('❌ EMAIL_USER ou EMAIL_PASS non défini dans .env');
   }
 
-  // 🔐 Résolution de l’adresse destinataire
+  // Résolution destinataire
   const to = await resolveEmail(options);
 
+  // Paramètres SMTP configurables
+  const host = process.env.EMAIL_HOST || 'smtp.gmail.com';
+  const port = Number(process.env.EMAIL_PORT || 587);
+  const secure =
+    (process.env.EMAIL_SECURE || '').toLowerCase() === 'true' || port === 465;
+
   const transporter = nodemailer.createTransport({
-    host: 'smtp.gmail.com',
-    port: 587,
-    secure: false, // true pour 465
-    auth: { user, pass },
+    host,
+    port,
+    secure,
+    auth: { user: smtpUser, pass: smtpPass },
   });
 
+  // Expéditeur (override possible)
+  const fromEmail = options.fromEmail || process.env.EMAIL_FROM || smtpUser;
+  const fromName = options.fromName || 'Cash Hay';
+  const from = `"${fromName}" <${fromEmail}>`;
+
   const mailOptions = {
-    from: `"Cash Hay" <${user}>`,
+    from,
     to,
     subject: options.subject,
     text: options.text,
     html: options.html,
+    attachments: options.attachments, // ⬅️ support CID / pièces jointes
+    headers: options.headers,
+    priority: options.priority,
   };
 
   try {
     const info = await transporter.sendMail(mailOptions);
     console.log(`📧 Email envoyé à ${maskEmailForLog(to)} ✅`, info.response);
+    return info;
   } catch (err) {
     console.error('❌ Échec de l’envoi de l’email :', err);
     throw new Error('Erreur d’envoi email');

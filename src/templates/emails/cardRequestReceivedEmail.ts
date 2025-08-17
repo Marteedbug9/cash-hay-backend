@@ -26,7 +26,7 @@ ${statusUrl}
 
 Merci d’avoir choisi CASH HAY. Utilisez votre compte partout, facilement et en sécurité, dans le respect des lois et de nos conditions.
 
-Ouvrir mon compte : ${loginUrl}
+
 Support : support@cash-hay.com
 Suivez-nous : LinkedIn / X / Instagram / Facebook
 © Cash Hay – Tous droits réservés`;
@@ -40,9 +40,9 @@ Suivez-nous : LinkedIn / X / Instagram / Facebook
           <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;background:#FFFFFF;border-radius:14px;overflow:hidden;border:1px solid #000000;">
             <tr>
               <td align="center" style="padding:28px 24px 10px;">
-                <img src="https://res.cloudinary.com/dmwcxkzs3/image/upload/v1755125913/ChatGPT_Image_Jul_27_2025_01_38_46_PM_qsxzai.png"
-                     width="120" height="120" alt="Cash Hay"
-                     style="display:block;width:120px;height:120px;border:0;outline:none;text-decoration:none;border-radius:12px" />
+                <i<img src="cid:cashhay_logo"
+     width="120" height="120" alt="Cash Hay"
+     style="display:block;width:120px;height:120px;border:0;outline:none;text-decoration:none;border-radius:12px;-ms-interpolation-mode:bicubic;" />
               </td>
             </tr>
 
@@ -109,8 +109,7 @@ Suivez-nous : LinkedIn / X / Instagram / Facebook
             <tr>
               <td align="center" style="padding:8px 28px;">
                 <p style="margin:0;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:22px;color:#000000;">
-                  Ouvrir mon compte :
-                  <a href="${loginUrl}" style="color:#16A34A;text-decoration:none;">${loginUrl}</a><br/>
+                 
                   Besoin d’aide ? Écrivez-nous à
                   <a href="mailto:support@cash-hay.com" style="color:#16A34A;text-decoration:none;">support@cash-hay.com</a>.
                 </p>

@@ -28,8 +28,7 @@ export function buildMoneyReceivedEmail({
     `Vous avez reçu ${amountLabel} via Cash Hay de ${senderFirstName}.`,
     txRef ? `Référence: ${txRef}` : '',
     createdAtLabel ? `Date: ${createdAtLabel}` : '',
-    ``,
-    `Accéder à votre compte: ${portalUrl}`,
+
     ``,
     `Merci d’utiliser Cash Hay.`,
   ].filter(Boolean).join('\n');
@@ -43,9 +42,9 @@ export function buildMoneyReceivedEmail({
           <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;background:#FFFFFF;border-radius:14px;overflow:hidden;border:1px solid #000000;">
             <tr>
               <td align="center" style="padding:28px 24px 10px;">
-                <img src="https://res.cloudinary.com/dmwcxkzs3/image/upload/v1755125913/ChatGPT_Image_Jul_27_2025_01_38_46_PM_qsxzai.png"
-                     width="120" height="120" alt="Cash Hay"
-                     style="display:block;width:120px;height:120px;border:0;outline:none;text-decoration:none;border-radius:12px" />
+                <img src="cid:cashhay_logo"
+     width="120" height="120" alt="Cash Hay"
+     style="display:block;width:120px;height:120px;border:0;outline:none;text-decoration:none;border-radius:12px;-ms-interpolation-mode:bicubic;" />
               </td>
             </tr>
             <tr>
@@ -74,22 +73,7 @@ export function buildMoneyReceivedEmail({
               </td>
             </tr>` : ''}
 
-            <tr>
-              <td align="center" style="padding:18px 28px 8px;">
-                <table role="presentation" cellpadding="0" cellspacing="0">
-                  <tr>
-                    <td bgcolor="#16A34A" style="border-radius:10px;">
-                      <a href="${portalUrl}"
-                         style="display:inline-block;padding:12px 22px;font-family:Arial,Helvetica,sans-serif;font-size:16px;color:#FFFFFF;text-decoration:none;border-radius:10px;"
-                         target="_blank" rel="noopener">
-                        Voir mon solde
-                      </a>
-                    </td>
-                  </tr>
-                </table>
-              </td>
-            </tr>
-
+            
             <tr><td style="padding:18px 28px 6px;"><hr style="border:none;border-top:1px solid #000000;margin:0;" /></td></tr>
 
             <tr>
