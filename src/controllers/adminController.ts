@@ -12,6 +12,12 @@ import { encrypt, decryptNullable } from '../utils/crypto';
 import { buildIdentityValidatedEmail } from '../templates/emails/identityValidatedEmail';
 import { sendEmail } from '../utils/notificationUtils'; // ajuste le chemin si besoin
 
+
+type MarqetaCard = {
+  token: string;
+  state: string;
+  last_four_digits?: string | null;
+};
 /* =========================
  * MARQETA: Produits de cartes
  * ========================= */
@@ -224,7 +230,7 @@ export const setUserStatus = async (req: Request, res: Response) => {
  * Valider identité
  * ================== */
 export const validateIdentity = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params; // user_id
 
   try {
     console.log("🔍 Démarrage de la validation d'identité pour l'utilisateur ID:", id);
@@ -246,8 +252,8 @@ export const validateIdentity = async (req: Request, res: Response) => {
       `SELECT 1 FROM cards WHERE user_id = $1 AND type = 'virtual'`,
       [id]
     );
-    if (cardCheck.rowCount && cardCheck.rowCount > 0) {
-      return res.status(400).json({ error: "Carte virtuelle déjà existante pour cet utilisateur." });
+   if ((cardCheck.rows?.length ?? 0) > 0) {
+      return res.status(400).json({ error: 'Carte virtuelle déjà existante pour cet utilisateur.' });
     }
 
     // 4) Mise à jour de l’état local
@@ -260,15 +266,15 @@ export const validateIdentity = async (req: Request, res: Response) => {
     const cardholderToken = await marqetaService.createMarqetaCardholder(id);
 
     // 6) Carte virtuelle Marqeta
-    const card = await marqetaService.createVirtualCard(cardholderToken);
+    const card = (await marqetaService.createVirtualCard(cardholderToken)) as MarqetaCard;
     if (!card || !card.token) {
       return res.status(500).json({ error: 'Échec de création de carte virtuelle.' });
     }
 
     // 7) Données d’affichage (mock)
-    const cardNumber  = generateMockCardNumber();
-    const expiryDate  = generateExpiryDate();
-    const cvv         = generateCVV();
+    const cardNumber = generateMockCardNumber();
+    const expiryDate = generateExpiryDate();
+    const cvv = generateCVV();
 
     // 8) Persist carte en DB
     await pool.query(
@@ -284,34 +290,31 @@ export const validateIdentity = async (req: Request, res: Response) => {
       )
       `,
       [
-        id,
-        card.token,
-        cardholderToken,
-        'virtual',
-        card.state,
-        card.last_four_digits,
-        cardNumber,
-        expiryDate,
-        JSON.stringify({ cvv }) // (démo)
+        id,                        // $1 user_id
+        card.token,                // $2 marqeta_card_token
+        cardholderToken,           // $3 marqeta_cardholder_token
+        'virtual',                 // $4 type
+        card.state,                // $5 status
+        card.last_four_digits ?? null, // $6 last4
+        cardNumber,                // $7 card_number (mock affichage backoffice)
+        expiryDate,                // $8 expiry_date (mock)
+        JSON.stringify({ cvv }),   // $9 encrypted_data (mock). En prod → chiffrer si conservé.
       ]
     );
 
-    // 9) 📧 EMAIL UNIQUE “Identité validée”
+    // 9) 📧 Email “Identité validée” (best-effort)
     try {
       const emailPlain =
         decryptNullable(user.email_enc) ??
-        user.email ??
-        null;
+        (user.email ?? null);
 
       const firstName =
         decryptNullable(user.first_name_enc) ??
-        user.first_name ??
-        '';
+        (user.first_name ?? '');
 
       const lastName =
         decryptNullable(user.last_name_enc) ??
-        user.last_name ??
-        '';
+        (user.last_name ?? '');
 
       if (emailPlain) {
         const { subject, text, html } = buildIdentityValidatedEmail({
@@ -320,13 +323,18 @@ export const validateIdentity = async (req: Request, res: Response) => {
           loginUrl: process.env.APP_LOGIN_URL || 'https://app.cash-hay.com/login',
           reward: Number(process.env.WELCOME_REWARD_HTG ?? '25'),
         });
+
+        // Option 1 : en clair
         await sendEmail({ to: emailPlain, subject, text, html });
+
+        // Option 2 (alternative privacy-by-default) :
+        // await sendEmail({ toUserId: id, subject, text, html });
       } else {
         console.warn(`⚠️ Aucun email en clair disponible pour l’utilisateur ${id}, email non envoyé.`);
       }
     } catch (mailErr) {
-      // on ne bloque pas la réussite métier si l’email échoue
       console.error('⚠️ Envoi email identité validée échoué :', mailErr);
+      // On ne bloque pas la réponse pour un échec email.
     }
 
     // 10) Réponse API
@@ -334,8 +342,8 @@ export const validateIdentity = async (req: Request, res: Response) => {
       success: true,
       message: 'Identité validée et carte virtuelle créée avec succès.',
       card: {
-        token:  card.token,
-        last4:  card.last_four_digits,
+        token: card.token,
+        last4: card.last_four_digits ?? null,
         status: card.state,
         cardNumber,
         expiryDate,
@@ -343,10 +351,10 @@ export const validateIdentity = async (req: Request, res: Response) => {
       },
     });
   } catch (err: any) {
-    console.error('❌ Erreur dans validateIdentity:', err.response?.data || err.message);
+    console.error('❌ Erreur dans validateIdentity:', err?.response?.data || err?.message || err);
     return res.status(500).json({
       error: "Erreur lors de la validation de l'identité ou de la création de la carte.",
-      detail: err.response?.data || err.message,
+      detail: err?.response?.data || err?.message,
     });
   }
 };
