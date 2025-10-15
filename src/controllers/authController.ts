@@ -12,7 +12,7 @@ import streamifier from 'streamifier';
 import { CardStatus, CardType } from '../constants/card';
 import { encrypt, encryptNullable, decryptNullable, blindIndexEmail, blindIndexPhone } from '../utils/crypto';
 import type { File as MulterFile } from 'multer';
-import { sha256Hex } from '../utils/security';
+import { sha256Hex, timingSafeEqualHex, normalizeOtp} from '../utils/security';
 import { buildWelcomeEmail } from '../templates/emails/welcomeEmail';
 
 
@@ -292,48 +292,35 @@ export const login = async (req: Request, res: Response) => {
   const ip = requestIp.getClientIp(req) || req.ip || '';
 
   try {
-    // On récupère ce qu’il faut explicitement (évite les surprises avec SELECT *)
+    // 1️⃣ Recherche utilisateur
     const result = await pool.query(
       `SELECT
-         id,
-         username,
-         role,
-         password_hash,
-         is_deceased,
-         is_blacklisted,
-         is_otp_verified,
-         photo_url,
-         is_verified,
-         verified_at,
-         identity_verified,
-         -- colonnes en clair (encore présentes)
-         email,
-         phone,
-         first_name,
-         last_name,
-         -- colonnes chiffrées (peuvent être NULL/absentes selon la migration)
-         email_enc,
-         phone_enc
+         id, username, role, password_hash,
+         is_deceased, is_blacklisted, is_otp_verified,
+         photo_url, is_verified, verified_at, identity_verified,
+         email, phone, first_name, last_name,
+         email_enc, phone_enc
        FROM users
        WHERE username = $1`,
       [username]
     );
 
-    if (result.rowCount === 0) {
+    if (result.rowCount === 0)
       return res.status(401).json({ error: 'Nom d’utilisateur ou mot de passe incorrect.' });
-    }
 
     const user = result.rows[0];
 
+    // 2️⃣ Vérification mot de passe
     const isMatch = await bcrypt.compare(String(password), user.password_hash);
-    if (!isMatch) {
+    if (!isMatch)
       return res.status(401).json({ error: 'Nom d’utilisateur ou mot de passe incorrect.' });
-    }
 
-    if (user.is_deceased) return res.status(403).json({ error: 'Ce compte est marqué comme décédé.' });
-    if (user.is_blacklisted) return res.status(403).json({ error: 'Ce compte est sur liste noire.' });
+    if (user.is_deceased)
+      return res.status(403).json({ error: 'Ce compte est marqué comme décédé.' });
+    if (user.is_blacklisted)
+      return res.status(403).json({ error: 'Ce compte est sur liste noire.' });
 
-    // A-t-on déjà vu cet IP ?
+    // 3️⃣ Vérifie si l’adresse IP est nouvelle
     const ipResult = await pool.query(
       'SELECT 1 FROM login_history WHERE user_id = $1 AND ip_address = $2',
       [user.id, ip]
@@ -341,66 +328,73 @@ export const login = async (req: Request, res: Response) => {
     const isNewIP = ipResult.rowCount === 0;
     const requiresOTP = !user.is_otp_verified || isNewIP;
 
-if (requiresOTP) {
-  // 1) Génère et stocke un OTP (10 minutes)
-  const code = generateOTP(); // ← au lieu de Math.random()
-  await pool.query('DELETE FROM otps WHERE user_id = $1', [user.id]);
+    // 4️⃣ Si OTP requis
+    if (requiresOTP) {
+      const otp = generateOTP();
+      const now = new Date();
+      const expiresAt = new Date(now.getTime() + 10 * 60 * 1000);
+      const codeHash = sha256Hex(normalizeOtp(otp));
 
-  const now = new Date();
-  const expiresAt = new Date(now.getTime() + 10 * 60 * 1000);
+      // Nettoyage ancien OTP (si existant)
+      await pool.query('DELETE FROM otps WHERE user_id = $1', [user.id]);
 
-  await pool.query(
-    `INSERT INTO otps (user_id, code, created_at, expires_at)
-     VALUES ($1, $2, $3, $4)`,
-    [user.id, code, now, expiresAt]
-  );
+      // 🟩 Insertion avec code_hash (et non plus code)
+      await pool.query(
+        `INSERT INTO otps (user_id, code_hash, created_at, expires_at)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (user_id)
+         DO UPDATE SET code_hash = EXCLUDED.code_hash,
+                       created_at = EXCLUDED.created_at,
+                       expires_at = EXCLUDED.expires_at`,
+        [user.id, codeHash, now, expiresAt]
+      );
 
-  // 2) Récupère les contacts (compat ancien/nouveau schéma)
-  const email = decryptNullable(user.email_enc) ?? user.email ?? '';
-  const phone = decryptNullable(user.phone_enc) ?? user.phone ?? '';
+      // 5️⃣ Récupération des contacts
+      const email = decryptNullable(user.email_enc) ?? user.email ?? '';
+      const phone = decryptNullable(user.phone_enc) ?? user.phone ?? '';
 
-  // 3) Envoi réel (best-effort, sans bloquer la réponse)
-  const tasks: Promise<any>[] = [];
-  if (email) {
-    tasks.push(
-      sendEmail({
-        to: email,
-        subject: 'Code de vérification - Cash Hay',
-        text: `Votre code est : ${code} (valide 10 minutes)`,
-      }).catch(e => console.error('❌ Envoi email OTP échoué :', e?.message || e))
-    );
-  }
-  if (phone) {
-    tasks.push(
-      sendSMS(phone, `Cash Hay : Votre code OTP est ${code} (10 min)`)
-        .catch(e => console.error('❌ Envoi SMS OTP échoué :', e?.message || e))
-    );
-  }
-    await Promise.all(tasks);
-  console.log(`📩 OTP login envoyé à ${email || '(pas d’email)'} / ${phone || '(pas de phone)'} : ${code}`);
+      // 6️⃣ Envoi OTP (non bloquant)
+      const tasks: Promise<any>[] = [];
+      if (email) {
+        tasks.push(
+          sendEmail({
+            to: email,
+            subject: 'Code de vérification - Cash Hay',
+            text: `Votre code est : ${otp} (valide 10 minutes)`,
+          }).catch(e => console.error('❌ Envoi email OTP échoué :', e?.message || e))
+        );
+      }
+      if (phone) {
+        tasks.push(
+          sendSMS(phone, `Cash Hay : Votre code OTP est ${otp} (10 min)`)
+            .catch(e => console.error('❌ Envoi SMS OTP échoué :', e?.message || e))
+        );
+      }
+      await Promise.all(tasks);
 
-  // ➕ Déclenche l’alerte IP si nouvelle IP
-  if (isNewIP) {
-    try {
-      await createSuspiciousIPAlert(user, ip, req.headers['user-agent'] as string);
-    } catch (e) {
-      console.error('⚠️ Création alerte IP échouée:', e);
+      console.log(`📩 OTP login envoyé à ${email || '(pas d’email)'} / ${phone || '(pas de téléphone)'} : ${otp}`);
+
+      // 7️⃣ Déclenche une alerte si IP nouvelle
+      if (isNewIP) {
+        try {
+          await createSuspiciousIPAlert(user, ip, req.headers['user-agent'] as string);
+        } catch (e) {
+          console.error('⚠️ Création alerte IP échouée:', e);
+        }
+      }
+    } else {
+      // IP déjà connue, connexion directe
+      await pool.query(
+        'INSERT INTO login_history (user_id, ip_address) VALUES ($1, $2)',
+        [user.id, ip]
+      );
     }
-  }
 
-} else {
-  await pool.query(
-    'INSERT INTO login_history (user_id, ip_address) VALUES ($1, $2)',
-    [user.id, ip]
-  );
-}
-
-
-    // ✅ Déchiffre si dispo, sinon fallback sur la colonne en clair
+    // 8️⃣ Prépare la réponse
     const email = decryptNullable(user.email_enc) ?? user.email ?? '';
     const phone = decryptNullable(user.phone_enc) ?? user.phone ?? '';
-    const firstName = user.first_name ?? '';   // pas de first_name_enc dans ton schéma actuel
-    const lastName  = user.last_name  ?? '';
+    const firstName = user.first_name ?? '';
+    const lastName = user.last_name ?? '';
 
     const token = jwt.sign(
       { id: user.id, email, role: user.role || 'user', is_otp_verified: user.is_otp_verified || false },
@@ -411,7 +405,8 @@ if (requiresOTP) {
     const maskUsername = (name: string): string =>
       name.length <= 4 ? name : name.slice(0, 4) + '*'.repeat(name.length - 4);
 
-    res.status(200).json({
+    // ✅ Réponse finale
+    return res.status(200).json({
       message: 'Connexion réussie',
       requiresOTP,
       token,
@@ -780,22 +775,31 @@ export const confirmSuspiciousAttempt: RequestHandler = async (req: Request, res
 // ➤ Vérification OTP après login
 export const verifyOTP: RequestHandler = async (req: Request, res: Response) => {
   const { userId, code } = req.body;
-  if (!userId || !code) return res.status(400).json({ error: 'ID utilisateur et code requis.' });
+  if (!userId || !code)
+    return res.status(400).json({ error: 'ID utilisateur et code requis.' });
 
   try {
-    // 1) OTP valide ?
+    // 1️⃣ Vérifie OTP (hashé)
     const otpRes = await pool.query(
-      'SELECT code, expires_at FROM otps WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1',
+      'SELECT code_hash, expires_at FROM otps WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1',
       [userId]
     );
-    if (otpRes.rowCount === 0) return res.status(400).json({ valid: false, reason: 'Expired or invalid code.' });
+    if (otpRes.rowCount === 0)
+      return res.status(400).json({ valid: false, reason: 'Aucun code trouvé.' });
 
-    const { code: storedCode, expires_at } = otpRes.rows[0];
-    if (new Date() > new Date(expires_at) || String(code).trim() !== String(storedCode).trim()) {
-      return res.status(400).json({ error: 'Code invalide ou expiré.' });
-    }
+    const { code_hash, expires_at } = otpRes.rows[0];
 
-    // 2) Gate alerte IP (⏱ 60 secondes)
+    // Vérifie expiration
+    if (new Date() > new Date(expires_at))
+      return res.status(400).json({ error: 'Code expiré.' });
+
+    // Compare les hash de manière sécurisée (constant-time)
+    const candidate = sha256Hex(normalizeOtp(code));
+    const match = timingSafeEqualHex(code_hash, candidate);
+    if (!match)
+      return res.status(400).json({ error: 'Code invalide.' });
+
+    // 2️⃣ Gate alerte IP (⏱ 60 secondes)
     const GATE_WINDOW_MS = 60 * 1000;
     const { rows: alerts } = await pool.query(
       `SELECT id, response, created_at
@@ -814,37 +818,44 @@ export const verifyOTP: RequestHandler = async (req: Request, res: Response) => 
       if (withinGate) {
         if (last.response === 'N') {
           return res.status(403).json({
-            error: "Connexion bloquée : tentative suspecte signalée (réponse N). Contactez le support."
+            error:
+              "Connexion bloquée : tentative suspecte signalée (réponse N). Contactez le support."
           });
         }
         if (last.response !== 'Y') {
           return res.status(403).json({
-            error: "Confirmez la connexion en répondant 'Y' au SMS d'alerte, ou attendez 60 s pour valider via OTP.",
+            error:
+              "Confirmez la connexion en répondant 'Y' au SMS d'alerte, ou attendez 60 s pour valider via OTP.",
             waitMs: Math.max(GATE_WINDOW_MS - ageMs, 0)
           });
         }
       } else {
-        // 60 s écoulées, pas de réponse → on laisse passer; on marque TIMEOUT (best-effort)
+        // 60 s écoulées, pas de réponse → on marque TIMEOUT (non bloquant)
         if (!last.response) {
           try {
             await pool.query(
               `UPDATE alerts SET response = 'TIMEOUT' WHERE id = $1`,
               [last.id]
             );
-          } catch {} // non bloquant
+          } catch {
+            /* ignore */
+          }
         }
       }
     }
 
-    // 3) Marque l’OTP comme vérifié
+    // 3️⃣ Marque l’utilisateur comme otp_verified
     await pool.query('UPDATE users SET is_otp_verified = true WHERE id = $1', [userId]);
+
+    // Supprime l’OTP utilisé
     await pool.query('DELETE FROM otps WHERE user_id = $1', [userId]);
 
-    // 4) Charge l’utilisateur et renvoie le token
+    // 4️⃣ Charge l’utilisateur et génère le token JWT
     const userRes = await pool.query(
       `SELECT id, username, role, email, email_enc, phone, phone_enc,
               first_name, last_name, photo_url, is_verified, identity_verified, identity_request_enabled
-         FROM users WHERE id = $1`,
+         FROM users
+        WHERE id = $1`,
       [userId]
     );
     const user = userRes.rows[0];
@@ -857,12 +868,14 @@ export const verifyOTP: RequestHandler = async (req: Request, res: Response) => 
       { expiresIn: '24h' }
     );
 
+    // 5️⃣ Log de sécurité
     await pool.query(
       `INSERT INTO logs_security (user_id, action, ip_address, created_at)
        VALUES ($1, 'verify_otp', $2, NOW())`,
       [userId, req.ip]
     );
 
+    // ✅ Réponse finale
     return res.status(200).json({
       token,
       user: {
@@ -871,16 +884,16 @@ export const verifyOTP: RequestHandler = async (req: Request, res: Response) => 
         email,
         phone,
         first_name: user.first_name ?? '',
-        last_name:  user.last_name ?? '',
+        last_name: user.last_name ?? '',
         photo_url: user.photo_url || null,
         is_verified: !!user.is_verified,
         is_otp_verified: true,
         identity_verified: !!user.identity_verified,
         identity_request_enabled: user.identity_request_enabled ?? true,
-        role: user.role || 'user',
-      },
+        role: user.role || 'user'
+      }
     });
-  } catch (err:any) {
+  } catch (err: any) {
     console.error('❌ Erreur vérification OTP:', err?.message || err);
     return res.status(500).json({ error: 'Erreur serveur.' });
   }
