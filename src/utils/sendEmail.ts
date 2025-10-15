@@ -8,7 +8,7 @@ export type EmailAttachment = {
   filename?: string;
   path?: string;
   content?: any;      // Buffer | string
-  cid?: string;       // pour <img src="cid:...">
+  cid?: string;       // <img src="cid:...">
   contentType?: string;
   encoding?: string;
 };
@@ -103,12 +103,13 @@ const sendEmail = async (options: EmailOptions): Promise<SentMessageInfo> => {
     auth: { user: smtpUser, pass: smtpPass }, // Gmail: App Password requis (2FA)
     connectionTimeout: 8_000,  // 8s
     socketTimeout: 10_000,     // 10s
-    // important sur Render (évite IPv6)
-        tls: {
+    tls: {
       minVersion: 'TLSv1.2',
       servername: host,        // SNI correct
     },
   };
+  // Si tu veux forcer IPv4 et éviter d’anciens soucis de typage:
+  // (transportOpts as any).family = 4;
 
   const transporter = nodemailer.createTransport(transportOpts);
 
@@ -128,13 +129,13 @@ const sendEmail = async (options: EmailOptions): Promise<SentMessageInfo> => {
     subject: options.subject,
     text: textFallback,
     html: options.html,
-    attachments: options.attachments as any, // conforme à SMTPTransport.Attachment
+    attachments: options.attachments as any, // cast : conforme à SMTPTransport.Attachment
     headers: options.headers,
     priority: options.priority,
   };
 
   try {
-    // Optionnel: await transporter.verify();
+    // Optionnel : await transporter.verify();
     const info = await transporter.sendMail(mailOptions);
     console.log(`📧 Email envoyé à ${maskEmailForLog(to)} ✅`, info.response);
     return info;
