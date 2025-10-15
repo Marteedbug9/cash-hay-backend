@@ -1,14 +1,13 @@
 // src/utils/sendEmail.ts
 import nodemailer, { SentMessageInfo } from 'nodemailer';
-import type SMTPTransport from 'nodemailer/lib/smtp-transport';
 import db from '../config/db';
 import { decryptNullable } from '../utils/crypto';
 
 export type EmailAttachment = {
   filename?: string;
   path?: string;
-  content?: any;      // Buffer | string
-  cid?: string;       // <img src="cid:...">
+  content?: any;         // Buffer | string
+  cid?: string;          // pour <img src="cid:...">
   contentType?: string;
   encoding?: string;
 };
@@ -17,21 +16,21 @@ export interface EmailOptions {
   // 1) adresse en clair (legacy)
   to?: string;
 
-  // 2) privacy by default (résolution DB)
-  toUserId?: string;   // users.email_enc via id
-  toEmailEnc?: string; // déchiffre directement
-  toEmailBidx?: string;// users.email_bidx -> email_enc
+  // 2) privacy by default
+  toUserId?: string;     // users.email_enc via id
+  toEmailEnc?: string;   // déchiffre directement
+  toEmailBidx?: string;  // users.email_bidx -> email_enc
 
   subject: string;
   text?: string;
   html?: string;
 
-  // Pièces jointes / en-têtes / priorité
+  // Nouveau : pièces jointes / en-têtes / priorité
   attachments?: EmailAttachment[];
   headers?: Record<string, string>;
   priority?: 'high' | 'normal' | 'low';
 
-  // Override expéditeur (optionnel)
+  // Optionnel : override expéditeur
   fromEmail?: string;
   fromName?: string;
 }
@@ -83,6 +82,7 @@ async function resolveEmail(opts: EmailOptions): Promise<string> {
 const sendEmail = async (options: EmailOptions): Promise<SentMessageInfo> => {
   const smtpUser = process.env.EMAIL_USER;
   const smtpPass = process.env.EMAIL_PASS;
+
   if (!smtpUser || !smtpPass) {
     throw new Error('❌ EMAIL_USER ou EMAIL_PASS non défini dans .env');
   }
@@ -90,57 +90,41 @@ const sendEmail = async (options: EmailOptions): Promise<SentMessageInfo> => {
   // Résolution destinataire
   const to = await resolveEmail(options);
 
-  // Paramètres SMTP (explicites pour Render)
+  // Paramètres SMTP configurables
   const host = process.env.EMAIL_HOST || 'smtp.gmail.com';
   const port = Number(process.env.EMAIL_PORT || 587);
-  const secure = port === 465; // 465 = TLS direct ; 587 = STARTTLS
+  const secure =
+    (process.env.EMAIL_SECURE || '').toLowerCase() === 'true' || port === 465;
 
-  // Typage explicite pour éviter TS2769
-  const transportOpts: SMTPTransport.Options = {
+  const transporter = nodemailer.createTransport({
     host,
     port,
     secure,
-    auth: { user: smtpUser, pass: smtpPass }, // Gmail: App Password requis (2FA)
-    connectionTimeout: 8_000,  // 8s
-    socketTimeout: 10_000,     // 10s
-    tls: {
-      minVersion: 'TLSv1.2',
-      servername: host,        // SNI correct
-    },
-  };
-  // Si tu veux forcer IPv4 et éviter d’anciens soucis de typage:
-  // (transportOpts as any).family = 4;
+    auth: { user: smtpUser, pass: smtpPass },
+  });
 
-  const transporter = nodemailer.createTransport(transportOpts);
-
-  // Expéditeur
+  // Expéditeur (override possible)
   const fromEmail = options.fromEmail || process.env.EMAIL_FROM || smtpUser;
   const fromName = options.fromName || 'Cash Hay';
   const from = `"${fromName}" <${fromEmail}>`;
 
-  // Fallback texte si HTML seul (meilleure délivrabilité)
-  const textFallback =
-    options.text ??
-    (options.html ? options.html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim() : '');
-
-  const mailOptions: SMTPTransport.MailOptions = {
+  const mailOptions = {
     from,
     to,
     subject: options.subject,
-    text: textFallback,
+    text: options.text,
     html: options.html,
-    attachments: options.attachments as any, // cast : conforme à SMTPTransport.Attachment
+    attachments: options.attachments, // ⬅️ support CID / pièces jointes
     headers: options.headers,
     priority: options.priority,
   };
 
   try {
-    // Optionnel : await transporter.verify();
     const info = await transporter.sendMail(mailOptions);
     console.log(`📧 Email envoyé à ${maskEmailForLog(to)} ✅`, info.response);
     return info;
-  } catch (err: unknown) {
-    console.error('❌ Échec de l’envoi de l’email :', (err as any)?.message || err);
+  } catch (err) {
+    console.error('❌ Échec de l’envoi de l’email :', err);
     throw new Error('Erreur d’envoi email');
   }
 };
