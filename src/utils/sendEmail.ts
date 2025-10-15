@@ -1,13 +1,14 @@
 // src/utils/sendEmail.ts
 import nodemailer, { SentMessageInfo } from 'nodemailer';
+import type SMTPTransport from 'nodemailer/lib/smtp-transport';
 import db from '../config/db';
 import { decryptNullable } from '../utils/crypto';
 
 export type EmailAttachment = {
   filename?: string;
   path?: string;
-  content?: any;         // Buffer | string
-  cid?: string;          // pour <img src="cid:...">
+  content?: any;      // Buffer | string
+  cid?: string;       // pour <img src="cid:...">
   contentType?: string;
   encoding?: string;
 };
@@ -16,21 +17,21 @@ export interface EmailOptions {
   // 1) adresse en clair (legacy)
   to?: string;
 
-  // 2) privacy by default
-  toUserId?: string;     // users.email_enc via id
-  toEmailEnc?: string;   // déchiffre directement
-  toEmailBidx?: string;  // users.email_bidx -> email_enc
+  // 2) privacy by default (résolution DB)
+  toUserId?: string;   // users.email_enc via id
+  toEmailEnc?: string; // déchiffre directement
+  toEmailBidx?: string;// users.email_bidx -> email_enc
 
   subject: string;
   text?: string;
   html?: string;
 
-  // Nouveau : pièces jointes / en-têtes / priorité
+  // Pièces jointes / en-têtes / priorité
   attachments?: EmailAttachment[];
   headers?: Record<string, string>;
   priority?: 'high' | 'normal' | 'low';
 
-  // Optionnel : override expéditeur
+  // Override expéditeur (optionnel)
   fromEmail?: string;
   fromName?: string;
 }
@@ -82,7 +83,6 @@ async function resolveEmail(opts: EmailOptions): Promise<string> {
 const sendEmail = async (options: EmailOptions): Promise<SentMessageInfo> => {
   const smtpUser = process.env.EMAIL_USER;
   const smtpPass = process.env.EMAIL_PASS;
-
   if (!smtpUser || !smtpPass) {
     throw new Error('❌ EMAIL_USER ou EMAIL_PASS non défini dans .env');
   }
@@ -90,41 +90,56 @@ const sendEmail = async (options: EmailOptions): Promise<SentMessageInfo> => {
   // Résolution destinataire
   const to = await resolveEmail(options);
 
-  // Paramètres SMTP configurables
+  // Paramètres SMTP (explicites pour Render)
   const host = process.env.EMAIL_HOST || 'smtp.gmail.com';
   const port = Number(process.env.EMAIL_PORT || 587);
-  const secure =
-    (process.env.EMAIL_SECURE || '').toLowerCase() === 'true' || port === 465;
+  const secure = port === 465; // 465 = TLS direct ; 587 = STARTTLS
 
-  const transporter = nodemailer.createTransport({
+  // Typage explicite pour éviter TS2769
+  const transportOpts: SMTPTransport.Options = {
     host,
     port,
     secure,
-    auth: { user: smtpUser, pass: smtpPass },
-  });
+    auth: { user: smtpUser, pass: smtpPass }, // Gmail: App Password requis (2FA)
+    connectionTimeout: 8_000,  // 8s
+    socketTimeout: 10_000,     // 10s
+    // important sur Render (évite IPv6)
+        tls: {
+      minVersion: 'TLSv1.2',
+      servername: host,        // SNI correct
+    },
+  };
 
-  // Expéditeur (override possible)
+  const transporter = nodemailer.createTransport(transportOpts);
+
+  // Expéditeur
   const fromEmail = options.fromEmail || process.env.EMAIL_FROM || smtpUser;
   const fromName = options.fromName || 'Cash Hay';
   const from = `"${fromName}" <${fromEmail}>`;
 
-  const mailOptions = {
+  // Fallback texte si HTML seul (meilleure délivrabilité)
+  const textFallback =
+    options.text ??
+    (options.html ? options.html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim() : '');
+
+  const mailOptions: SMTPTransport.MailOptions = {
     from,
     to,
     subject: options.subject,
-    text: options.text,
+    text: textFallback,
     html: options.html,
-    attachments: options.attachments, // ⬅️ support CID / pièces jointes
+    attachments: options.attachments as any, // conforme à SMTPTransport.Attachment
     headers: options.headers,
     priority: options.priority,
   };
 
   try {
+    // Optionnel: await transporter.verify();
     const info = await transporter.sendMail(mailOptions);
     console.log(`📧 Email envoyé à ${maskEmailForLog(to)} ✅`, info.response);
     return info;
-  } catch (err) {
-    console.error('❌ Échec de l’envoi de l’email :', err);
+  } catch (err: unknown) {
+    console.error('❌ Échec de l’envoi de l’email :', (err as any)?.message || err);
     throw new Error('Erreur d’envoi email');
   }
 };
