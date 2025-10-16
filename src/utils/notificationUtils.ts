@@ -8,32 +8,52 @@ dotenv.config();
 /* ===========================
    TWILIO (SMS)
 =========================== */
-const TWILIO_SID = process.env.TWILIO_SID!;
-const TWILIO_TOKEN = process.env.TWILIO_TOKEN!;
+// ✅ Supporte 2 conventions d'ENV : (TWILIO_SID, TWILIO_TOKEN) ou (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+const TWILIO_SID =
+  process.env.TWILIO_SID || process.env.TWILIO_ACCOUNT_SID || '';
+const TWILIO_TOKEN =
+  process.env.TWILIO_TOKEN || process.env.TWILIO_AUTH_TOKEN || '';
+
+// ✅ Préférence : Messaging Service SID (meilleure délivrabilité/routage), sinon numéro
+const TWILIO_MESSAGING_SERVICE_SID = process.env.TWILIO_MESSAGING_SERVICE_SID;
 const TWILIO_PHONE_NUMBER = process.env.TWILIO_PHONE_NUMBER;
 
 if (!TWILIO_SID || !TWILIO_TOKEN) {
-  console.warn('⚠️ TWILIO_SID ou TWILIO_TOKEN manquant dans .env');
+  console.warn('⚠️ TWILIO_SID/TWILIO_TOKEN ou TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN manquants dans .env');
 }
-if (!TWILIO_PHONE_NUMBER) {
-  console.warn('⚠️ TWILIO_PHONE_NUMBER manquant dans .env (sendSMS échouera).');
+if (!TWILIO_MESSAGING_SERVICE_SID && !TWILIO_PHONE_NUMBER) {
+  console.warn('⚠️ Ni TWILIO_MESSAGING_SERVICE_SID ni TWILIO_PHONE_NUMBER n’est défini (sendSMS échouera).');
 }
 
-const twilioClient = twilio(TWILIO_SID, TWILIO_TOKEN);
+// ⚠️ Initialise le client seulement si les creds existent
+const twilioClient = (TWILIO_SID && TWILIO_TOKEN)
+  ? twilio(TWILIO_SID, TWILIO_TOKEN)
+  : null;
 
 export const sendSMS = async (phone: string, message: string): Promise<void> => {
-  if (!TWILIO_PHONE_NUMBER) throw new Error('TWILIO_PHONE_NUMBER manquant dans .env');
+  if (!twilioClient) {
+    throw new Error('Twilio non configuré : SID/TOKEN manquants.');
+  }
+  if (!TWILIO_MESSAGING_SERVICE_SID && !TWILIO_PHONE_NUMBER) {
+    throw new Error('Aucun expéditeur SMS défini (TWILIO_MESSAGING_SERVICE_SID ou TWILIO_PHONE_NUMBER).');
+  }
 
   try {
-    const result = await twilioClient.messages.create({
+    const params: Record<string, string> = {
       body: message,
-      to: phone,
-      from: TWILIO_PHONE_NUMBER,
-    });
+      to: phone, // ⚠️ idéalement en E.164 (+509..., +1..., etc.)
+    };
+    if (TWILIO_MESSAGING_SERVICE_SID) {
+      params['messagingServiceSid'] = TWILIO_MESSAGING_SERVICE_SID;
+    } else if (TWILIO_PHONE_NUMBER) {
+      params['from'] = TWILIO_PHONE_NUMBER;
+    }
+
+    const result = await twilioClient.messages.create(params as any);
     console.log(`📱 SMS envoyé à ${phone} ✅ SID: ${result.sid}`);
   } catch (error: unknown) {
     console.error('❌ Erreur lors de l’envoi du SMS :', (error as any)?.message || error);
-    // Ne lève pas par défaut pour ne pas casser le flux — à ajuster selon ton besoin
+    // Ne pas throw par défaut pour ne pas casser le flux — adapte selon ton besoin
   }
 };
 

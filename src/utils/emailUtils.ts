@@ -25,19 +25,22 @@ export const sendSecurityAlertEmail = async (to: string): Promise<void> => {
  * déchiffre/résous-les AVANT d’appeler cette fonction.
  */
 export const sendOTP = async (phone: string, email: string, otp: string): Promise<void> => {
-  try {
-    await sendEmail({
-      to: email,
-      subject: 'Votre code de réinitialisation',
-      text: `Code: ${otp}`,
-    });
-
-    await sendSMS(phone, `Votre code est : ${otp}`);
-  } catch (error) {
-    console.error('Erreur lors de l’envoi OTP :', error);
-    throw new Error('Échec de l’envoi du code OTP.');
+  const tasks: Promise<any>[] = [];
+  if (email) {
+    tasks.push(
+      sendEmail({ to: email, subject: 'Votre code de réinitialisation', text: `Code: ${otp}` })
+        .catch((e: any) => console.error('❌ Email OTP:', e?.message || e))
+    );
   }
+  if (phone) {
+    tasks.push(
+      sendSMS(phone, `Votre code est : ${otp}`)
+        .catch((e: any) => console.error('❌ SMS OTP:', e?.message || e))
+    );
+  }
+  await Promise.allSettled(tasks); // on ne jette pas si l’un échoue
 };
+
 
 /**
  * Stocke l’OTP de manière sécurisée (hash SHA-256) dans la table otps
@@ -45,13 +48,13 @@ export const sendOTP = async (phone: string, email: string, otp: string): Promis
  */
 export const storeOTP = async (userId: string, otp: string): Promise<void> => {
   const codeHash = crypto.createHash('sha256').update(otp, 'utf8').digest('hex');
-
-  // On supprime d’abord les anciens OTP de cet utilisateur puis on insère le nouveau
-  await db.query('DELETE FROM otps WHERE user_id = $1', [userId]);
-
   await db.query(
     `INSERT INTO otps (user_id, code_hash, expires_at, created_at)
-     VALUES ($1, $2, NOW() + INTERVAL '10 minutes', NOW())`,
+     VALUES ($1, $2, NOW() + INTERVAL '10 minutes', NOW())
+     ON CONFLICT (user_id) DO UPDATE
+       SET code_hash = EXCLUDED.code_hash,
+           expires_at = EXCLUDED.expires_at,
+           created_at = EXCLUDED.created_at`,
     [userId, codeHash]
   );
 };
