@@ -1,9 +1,10 @@
 // src/utils/sendEmail.ts
 import nodemailer, { SentMessageInfo } from 'nodemailer';
+import sgMail from '@sendgrid/mail';
 import db from '../config/db';
 import { decryptNullable } from '../utils/crypto';
 
-type LegacyEmailOptions = { to: string; subject: string; text?: string; html?: string; };
+type LegacyEmailOptions = { to: string; subject: string; text?: string; html?: string };
 
 export type EmailAttachment = {
   filename?: string;
@@ -27,9 +28,11 @@ export interface EmailOptions {
   priority?: 'high' | 'normal' | 'low';
   fromEmail?: string;
   fromName?: string;
+  replyToEmail?: string;
+  replyToName?: string;
 }
 
-// -- Utils
+/* ------------------------------ Utils ------------------------------ */
 function normalizeEmail(e?: string | null): string | null {
   const v = (e ?? '').trim();
   return v ? v.toLowerCase() : null;
@@ -49,6 +52,7 @@ function stripHtml(input: string): string {
 }
 
 async function resolveEmail(opts: EmailOptions | LegacyEmailOptions): Promise<string> {
+  // direct "to"
   if ('to' in opts && opts.to && opts.to.includes('@')) return extractAddress(opts.to);
 
   const o = opts as EmailOptions;
@@ -85,17 +89,17 @@ async function resolveEmail(opts: EmailOptions | LegacyEmailOptions): Promise<st
   throw new Error('Impossible de résoudre une adresse email valide (to / toUserId / toEmailEnc / toEmailBidx).');
 }
 
+/* ------------------------ SMTP (Gmail/Host) ------------------------ */
 function buildGmailTransport() {
   const smtpUser = process.env.EMAIL_USER!;
   const smtpPass = process.env.EMAIL_PASS!;
-  // Mode service 'gmail' (recommandé pour Workspace + App Password)
   return nodemailer.createTransport({
     service: 'gmail',
     auth: { user: smtpUser, pass: smtpPass },
     connectionTimeout: 8000,
     socketTimeout: 10000,
-    
-    family: 4, // forcer IPv4 (évite des routes IPv6 foireuses)
+   
+    family: 4, // IPv4
   } as any);
 }
 
@@ -107,74 +111,144 @@ function buildHostPortTransport() {
   const secure = (process.env.EMAIL_SECURE || '').toLowerCase() === 'true' || port === 465;
 
   return nodemailer.createTransport({
-    host, port, secure,
+    host,
+    port,
+    secure,
     auth: { user: smtpUser, pass: smtpPass },
     connectionTimeout: 8000,
     socketTimeout: 10000,
-    tls: { servername: host, minVersion: 'TLSv1.2' }, // SNI correct
-  
+    tls: { servername: host, minVersion: 'TLSv1.2' },
+   
     family: 4,
   } as any);
 }
 
-async function makeTransport() {
-  // Si EMAIL_HOST contient "gmail" → privilégier service:'gmail'
+async function makeSmtpTransport() {
   const isGmail = (process.env.EMAIL_HOST || '').includes('gmail');
   if (isGmail) return buildGmailTransport();
   return buildHostPortTransport();
 }
 
+/* ------------------------ SendGrid (Web API) ------------------------ */
+function sgInit() {
+  const key = process.env.SENDGRID_API_KEY;
+  if (!key) throw new Error('SENDGRID_API_KEY manquant');
+  sgMail.setApiKey(key);
+}
+
+function mapSgAttachments(atts?: EmailAttachment[]) {
+  if (!atts?.length) return undefined;
+  return atts.map(a => {
+    const base64 =
+      typeof a.content === 'string'
+        ? a.content
+        : a.content
+        ? Buffer.from(a.content).toString('base64')
+        : undefined;
+    return {
+      content: base64,
+      filename: a.filename,
+      type: a.contentType,
+      disposition: 'attachment',
+      content_id: a.cid,
+    };
+  });
+}
+
+/* ----------------------------- sendEmail ---------------------------- */
 const sendEmail = async (options: EmailOptions | LegacyEmailOptions): Promise<SentMessageInfo> => {
+  const to = await resolveEmail(options);
+
+  // Expéditeur
+  const fromAddr =
+    ('fromEmail' in options && options.fromEmail) ||
+    process.env.EMAIL_FROM ||
+    process.env.EMAIL_USER ||
+    '';
+  const fromName = ('fromName' in options && options.fromName) || process.env.EMAIL_FROM_NAME || 'Cash Hay Support';
+  const replyToEmail = 'replyToEmail' in options ? options.replyToEmail : undefined;
+  const replyToName = 'replyToName' in options ? options.replyToName : undefined;
+
+  if (!fromAddr) {
+    throw new Error('EMAIL_FROM ou EMAIL_USER manquant pour définir l’expéditeur.');
+  }
+
+  // Corps texte fallback si HTML seul
+  const textFallback: string | undefined =
+    'text' in options && typeof options.text === 'string' && options.text.trim()
+      ? options.text
+      : 'html' in options && typeof options.html === 'string' && options.html.trim()
+      ? stripHtml(options.html)
+      : undefined;
+
+  // ✅ Garantir une string pour les SDK typés "string"
+  const textForSg: string = textFallback ?? '';
+  const textForSmtp: string = textFallback ?? '';
+
+  /* --------- 1) Tentative via SendGrid Web API (HTTPS 443) --------- */
+  try {
+    sgInit();
+
+    await sgMail.send({
+      to,
+      from: { email: extractAddress(fromAddr), name: fromName },
+      subject: (options as any).subject,
+      text: textForSg, // string garanti
+      html: 'html' in options ? options.html : undefined,
+      attachments: mapSgAttachments('attachments' in options ? options.attachments : undefined) as any,
+      headers: 'headers' in options ? options.headers : undefined,
+      ...(replyToEmail
+        ? { replyTo: { email: extractAddress(replyToEmail), name: replyToName || undefined } }
+        : {}),
+    });
+
+    console.log(`📧(SG) Email envoyé à ${maskEmailForLog(to)} ✅`);
+    // Objet minimal compatible
+    return { messageId: 'sendgrid', envelope: { from: extractAddress(fromAddr), to: [to] } } as unknown as SentMessageInfo;
+  } catch (sgErr: any) {
+    console.error('⚠️ SendGrid a échoué, bascule SMTP…', sgErr?.response?.body || sgErr?.message || sgErr);
+  }
+
+  /* --------- 2) Fallback SMTP (Gmail/Workspace ou autre) --------- */
   const smtpUser = process.env.EMAIL_USER;
   const smtpPass = process.env.EMAIL_PASS;
   if (!smtpUser || !smtpPass) {
-    throw new Error('❌ EMAIL_USER ou EMAIL_PASS non défini dans .env');
+    // Pas de SMTP valide pour fallback
+    throw new Error('Erreur d’envoi email (SendGrid échoué et SMTP non configuré).');
   }
 
-  const to = await resolveEmail(options);
+  let transporter = await makeSmtpTransport();
 
-  let transporter = await makeTransport();
-
-  // Expéditeur (nettoyé)
-  const fromRaw = ('fromEmail' in options && options.fromEmail) || process.env.EMAIL_FROM || smtpUser;
-  const fromAddr = extractAddress(fromRaw);
-  const fromName = ('fromName' in options && options.fromName) || 'Cash Hay';
-  const from = `"${fromName}" <${fromAddr}>`;
-
-  // Fallback texte si HTML seul
-  const textFallback: string | undefined =
-    ('text' in options && typeof options.text === 'string' && options.text.trim().length > 0)
-      ? options.text
-      : (('html' in options && typeof options.html === 'string' && options.html.trim().length > 0)
-          ? stripHtml(options.html!)
-          : undefined);
+  const host = process.env.EMAIL_HOST || 'smtp.gmail.com';
+  const port = Number(process.env.EMAIL_PORT || 587);
+  const secure = (process.env.EMAIL_SECURE || '').toLowerCase() === 'true' || port === 465;
 
   const mailOptions: nodemailer.SendMailOptions = {
-    from,
+    from: `"${fromName}" <${extractAddress(fromAddr)}>`,
     to,
-    subject: options.subject,
-    text: textFallback,
+    subject: (options as any).subject,
+    text: textForSmtp, // string garanti
     html: 'html' in options ? options.html : undefined,
     attachments: 'attachments' in options ? options.attachments : undefined,
     headers: 'headers' in options ? options.headers : undefined,
     priority: 'priority' in options ? options.priority : undefined,
+    ...(replyToEmail ? { replyTo: `"${replyToName || ''}" <${extractAddress(replyToEmail)}>` } : {}),
   };
 
   try {
-    // Petit test protocole (optionnel) : si ça throw ici, c’est la CONN
     await transporter.verify();
-
     const info = (await transporter.sendMail(mailOptions)) as SentMessageInfo;
-
-    console.log(`📧 Email envoyé à ${maskEmailForLog(to)} ✅`, {
+    console.log(`📧(SMTP) Email envoyé à ${maskEmailForLog(to)} ✅`, {
       messageId: info?.messageId,
       accepted: (info as any)?.accepted,
       rejected: (info as any)?.rejected,
+      host,
+      port,
+      secure,
     });
-
     return info;
   } catch (err: any) {
-    // Si timeout en 587, on tente un fallback 465/TLS direct (utile chez certains hosts)
+    // Fallback 465 si 587 timeout
     const isConnTimeout = err?.code === 'ETIMEDOUT' || /timeout/i.test(err?.message || '');
     const triedPort = Number(process.env.EMAIL_PORT || 587);
     if (isConnTimeout && triedPort !== 465) {
@@ -185,20 +259,19 @@ const sendEmail = async (options: EmailOptions | LegacyEmailOptions): Promise<Se
         transporter = buildHostPortTransport();
         await transporter.verify();
         const info = (await transporter.sendMail(mailOptions)) as SentMessageInfo;
-        console.log(`📧 (fallback 465) Email envoyé à ${maskEmailForLog(to)} ✅`, {
+        console.log(`📧(SMTP 465) Email envoyé à ${maskEmailForLog(to)} ✅`, {
           messageId: info?.messageId,
           accepted: (info as any)?.accepted,
           rejected: (info as any)?.rejected,
         });
         return info;
       } catch (e2: any) {
-        console.error('❌ Fallback 465 a échoué:', { code: e2?.code, cmd: e2?.command, msg: e2?.message });
+        console.error('❌ Fallback SMTP 465 a échoué:', { code: e2?.code, cmd: e2?.command, msg: e2?.message });
       }
     }
 
-    // Log détaillé pour diagnostiquer côté host
-    console.error('❌ Échec de l’envoi de l’email :', { code: err?.code, cmd: err?.command, msg: err?.message });
-    throw new Error('Erreur d’envoi email');
+    console.error('❌ Échec SMTP final :', { code: err?.code, cmd: err?.command, msg: err?.message });
+    throw new Error('Erreur d’envoi email (SendGrid + SMTP)');
   }
 };
 
