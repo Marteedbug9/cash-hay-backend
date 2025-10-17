@@ -20,34 +20,53 @@ export const sendSecurityAlertEmail = async (to: string): Promise<void> => {
 
 /**
  * Envoie un OTP par email + SMS.
- * ⚠️ Ici on attend toujours des coordonnées en clair.
- * Si tes emails/téléphones sont stockés chiffrés,
- * déchiffre/résous-les AVANT d’appeler cette fonction.
  */
 export const sendOTP = async (phone: string, email: string, otp: string): Promise<void> => {
   const tasks: Promise<any>[] = [];
+
   if (email) {
     tasks.push(
-      sendEmail({ to: email, subject: 'Votre code de réinitialisation', text: `Code: ${otp}` })
-        .catch((e: any) => console.error('❌ Email OTP:', e?.message || e))
+      sendEmail({
+        to: email,
+        subject: 'Votre code de réinitialisation',
+        text: `Code: ${otp}`,
+      }).catch((e: any) => console.error('❌ Email OTP:', e?.message || e))
     );
   }
+
   if (phone) {
     tasks.push(
-      sendSMS(phone, `Votre code est : ${otp}`)
-        .catch((e: any) => console.error('❌ SMS OTP:', e?.message || e))
+      sendSMS(phone, `Votre code est : ${otp}`).catch((e: any) =>
+        console.error('❌ SMS OTP:', e?.message || e)
+      )
     );
   }
-  await Promise.allSettled(tasks); // on ne jette pas si l’un échoue
-};
 
+  await Promise.allSettled(tasks);
+};
 
 /**
  * Stocke l’OTP de manière sécurisée (hash SHA-256) dans la table otps
- * en utilisant la colonne `code_hash` (plus de colonne `code` en clair).
+ * et applique une limite d’envoi (1 OTP / 30s).
  */
 export const storeOTP = async (userId: string, otp: string): Promise<void> => {
   const codeHash = crypto.createHash('sha256').update(otp, 'utf8').digest('hex');
+
+  // Empêche l’envoi excessif : 1 OTP par 30 secondes
+  const recent = await db.query(
+    `SELECT 1 FROM otps WHERE user_id=$1 AND created_at > NOW() - INTERVAL '30 seconds'`,
+    [userId]
+  );
+
+  if ((recent?.rowCount ?? 0) > 0) {
+    console.warn(`⚠️ OTP déjà envoyé récemment à l'utilisateur ${userId}`);
+    return;
+  }
+
+  // Nettoyage des anciens OTP expirés
+  await db.query(`DELETE FROM otps WHERE expires_at < NOW() - INTERVAL '1 day'`);
+
+  // Insertion / mise à jour
   await db.query(
     `INSERT INTO otps (user_id, code_hash, expires_at, created_at)
      VALUES ($1, $2, NOW() + INTERVAL '10 minutes', NOW())
@@ -60,7 +79,7 @@ export const storeOTP = async (userId: string, otp: string): Promise<void> => {
 };
 
 /**
- * Vérifie l’OTP en comparant le hash (code_hash) et la validité temporelle.
+ * Vérifie l’OTP en comparant le hash et la validité temporelle.
  */
 export const verifyOTP = async (userId: string, code: string): Promise<boolean> => {
   const codeHash = crypto.createHash('sha256').update(code, 'utf8').digest('hex');
@@ -75,5 +94,5 @@ export const verifyOTP = async (userId: string, code: string): Promise<boolean> 
     [userId, codeHash]
   );
 
-  return (result.rowCount ?? 0) > 0;
+  return (result?.rowCount ?? 0) > 0;
 };
