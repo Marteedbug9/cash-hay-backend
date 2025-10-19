@@ -1,3 +1,6 @@
+// backend/src/templates/emails/MoneyRequestEmail.ts
+import { deliverEmailWithLogo } from './_deliver';
+
 export type MoneyRequestEmailProps = {
   // Rôles
   requesterFirstName?: string;   // celui qui demande l'argent (émetteur de la demande)
@@ -72,8 +75,9 @@ export function buildMoneyRequestEmail({
   const text = textParts.join('\n');
 
   // ---- HTML ----
-  const ctaHtml = isReceived && (payUrl || portalUrl)
-    ? `
+  const ctaHtml =
+    isReceived && (payUrl || portalUrl)
+      ? `
       <tr>
         <td align="center" style="padding:16px 28px 6px;">
           <a href="${payUrl || portalUrl}" target="_blank" rel="noopener"
@@ -81,10 +85,13 @@ export function buildMoneyRequestEmail({
                     font-size:15px;line-height:20px;text-decoration:none;padding:12px 20px;border-radius:10px;">
             Payer maintenant
           </a>
+          <p style="margin:10px 0 0;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:18px;color:#000000;">
+            Si le bouton ne s’affiche pas, copiez-collez :<br/>
+            <span style="color:#16A34A;">${payUrl || portalUrl}</span>
+          </p>
         </td>
-      </tr>
-    `
-    : `
+      </tr>`
+      : `
       <tr>
         <td align="center" style="padding:16px 28px 6px;">
           <a href="${portalUrl}" target="_blank" rel="noopener"
@@ -92,12 +99,15 @@ export function buildMoneyRequestEmail({
                     font-size:15px;line-height:20px;text-decoration:none;padding:12px 20px;border-radius:10px;">
             Ouvrir Cash Hay
           </a>
+          <p style="margin:10px 0 0;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:18px;color:#000000;">
+            Si le bouton ne s’affiche pas, copiez-collez :<br/>
+            <span style="color:#16A34A;">${portalUrl}</span>
+          </p>
         </td>
-      </tr>
-    `;
+      </tr>`;
 
   const detailsHtml =
-    (noteLabel || dueDateLabel || feeLabel || requestRef || createdAtLabel)
+    noteLabel || dueDateLabel || feeLabel || requestRef || createdAtLabel
       ? `
       <tr>
         <td align="center" style="padding:8px 28px 0;">
@@ -193,4 +203,27 @@ export function buildMoneyRequestEmail({
 </html>`;
 
   return { subject, text, html };
+}
+
+/* ------------------------------------------------------------------ */
+/* Envoi : helper dédié à ce template                                 */
+/* ------------------------------------------------------------------ */
+
+// Destinataire polymorphique : clair / id / enc / bidx
+type Recipient =
+  | { to: string }
+  | { toUserId: string }
+  | { toEmailEnc: string }
+  | { toEmailBidx: string };
+
+/**
+ * Envoie l'email "Demande d’argent" (reçue ou envoyée) avec le logo inline (cid:cashhay_logo).
+ * Utilise SendGrid (via sendEmail) avec fallback SMTP si nécessaire.
+ */
+export async function sendMoneyRequestEmail(
+  recipient: Recipient,
+  props: Parameters<typeof buildMoneyRequestEmail>[0]
+) {
+  const built = buildMoneyRequestEmail(props);
+  return deliverEmailWithLogo(recipient, built);
 }

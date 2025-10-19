@@ -1,3 +1,6 @@
+// backend/src/templates/emails/moneySentEmail.ts
+import { deliverEmailWithLogo } from './_deliver';
+
 export type MoneySentEmailProps = {
   senderFirstName?: string;
   recipientFirstName?: string;
@@ -24,7 +27,8 @@ export function buildMoneySentEmail({
   appUrl,
 }: MoneySentEmailProps) {
   const subject = 'Votre transfert est confirmé - Cash Hay';
-  const portalUrl = appUrl || loginUrl || process.env.APP_LOGIN_URL || 'https://app.cash-hay.com/login';
+  const portalUrl =
+    appUrl || loginUrl || process.env.APP_LOGIN_URL || 'https://app.cash-hay.com/login';
 
   const text = [
     `Bonjour ${senderFirstName || ''},`,
@@ -35,8 +39,25 @@ export function buildMoneySentEmail({
     txRef ? `Référence: ${txRef}` : '',
     createdAtLabel ? `Date: ${createdAtLabel}` : '',
     ``,
+    `Se connecter : ${portalUrl}`,
+  ]
+    .filter(Boolean)
+    .join('\n');
 
-  ].filter(Boolean).join('\n');
+  const detailsHtml =
+    feeLabel || totalLabel || txRef || createdAtLabel
+      ? `
+      <tr>
+        <td align="center" style="padding:8px 28px 0;">
+          <p style="margin:0;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:20px;color:#000000;">
+            ${feeLabel ? `Frais&nbsp;: <strong>${feeLabel}</strong><br/>` : ''}
+            ${totalLabel ? `Total débité&nbsp;: <strong>${totalLabel}</strong><br/>` : ''}
+            ${txRef ? `Référence&nbsp;: <strong>${txRef}</strong><br/>` : ''}
+            ${createdAtLabel ? `Date&nbsp;: <strong>${createdAtLabel}</strong>` : ''}
+          </p>
+        </td>
+      </tr>`
+      : '';
 
   const html = `<!doctype html>
 <html lang="fr" style="margin:0;padding:0;">
@@ -48,8 +69,8 @@ export function buildMoneySentEmail({
             <tr>
               <td align="center" style="padding:28px 24px 10px;">
                 <img src="cid:cashhay_logo"
-     width="120" height="120" alt="Cash Hay"
-     style="display:block;width:120px;height:120px;border:0;outline:none;text-decoration:none;border-radius:12px;-ms-interpolation-mode:bicubic;" />
+                     width="120" height="120" alt="Cash Hay"
+                     style="display:block;width:120px;height:120px;border:0;outline:none;text-decoration:none;border-radius:12px;-ms-interpolation-mode:bicubic;" />
               </td>
             </tr>
             <tr>
@@ -68,19 +89,27 @@ export function buildMoneySentEmail({
               </td>
             </tr>
 
-            ${(feeLabel || totalLabel || txRef || createdAtLabel) ? `
+            ${detailsHtml}
+
             <tr>
-              <td align="center" style="padding:8px 28px 0;">
-                <p style="margin:0;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:20px;color:#000000;">
-                  ${feeLabel ? `Frais&nbsp;: <strong>${feeLabel}</strong><br/>` : ''}
-                  ${totalLabel ? `Total débité&nbsp;: <strong>${totalLabel}</strong><br/>` : ''}
-                  ${txRef ? `Référence&nbsp;: <strong>${txRef}</strong><br/>` : ''}
-                  ${createdAtLabel ? `Date&nbsp;: <strong>${createdAtLabel}</strong>` : ''}
+              <td align="center" style="padding:16px 28px 0;">
+                <table role="presentation" cellpadding="0" cellspacing="0">
+                  <tr>
+                    <td style="border-radius:10px;background:#16A34A;">
+                      <a href="${portalUrl}" target="_blank" rel="noopener"
+                         style="display:inline-block;padding:12px 22px;font-family:Arial,Helvetica,sans-serif;font-size:16px;color:#FFFFFF;text-decoration:none;border-radius:10px;">
+                        Se connecter
+                      </a>
+                    </td>
+                  </tr>
+                </table>
+                <p style="margin:10px 0 0;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:18px;color:#000000;">
+                  Si le bouton ne s’affiche pas, copiez-collez :<br />
+                  <span style="color:#16A34A;">${portalUrl}</span>
                 </p>
               </td>
-            </tr>` : ''}
+            </tr>
 
-            
             <tr><td style="padding:18px 28px 6px;"><hr style="border:none;border-top:1px solid #000000;margin:0;" /></td></tr>
 
             <tr>
@@ -127,4 +156,27 @@ export function buildMoneySentEmail({
 </html>`;
 
   return { subject, text, html };
+}
+
+/* ------------------------------------------------------------------ */
+/* Envoi : helper dédié à ce template                                 */
+/* ------------------------------------------------------------------ */
+
+// Destinataire polymorphique : clair / id / enc / bidx
+type Recipient =
+  | { to: string }
+  | { toUserId: string }
+  | { toEmailEnc: string }
+  | { toEmailBidx: string };
+
+/**
+ * Envoie l'email "Transfert envoyé" avec le logo inline (cid:cashhay_logo).
+ * Utilise SendGrid (via sendEmail) avec fallback SMTP si nécessaire.
+ */
+export async function sendMoneySentEmail(
+  recipient: Recipient,
+  props: Parameters<typeof buildMoneySentEmail>[0]
+) {
+  const built = buildMoneySentEmail(props);
+  return deliverEmailWithLogo(recipient, built);
 }

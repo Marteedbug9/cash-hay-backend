@@ -1,4 +1,6 @@
 // backend/src/templates/emails/depositEmail.ts
+import { deliverEmailWithLogo } from './_deliver';
+
 export function buildDepositEmail({
   firstName = '',
   amountLabel = '0 HTG',
@@ -21,6 +23,7 @@ Votre dépôt de ${amountLabel} a bien été crédité sur votre compte Cash Hay
 
 Merci d’avoir choisi CASH HAY. En respectant les lois, nos termes et conditions, vous serez toujours le bienvenu dans la famille. Votre argent est protégé, disponible et utilisable partout dans le monde.
 
+Se connecter : ${loginUrl}
 
 Support : support@cash-hay.com
 Suivez-nous : LinkedIn / X / Instagram / Facebook
@@ -36,8 +39,8 @@ Suivez-nous : LinkedIn / X / Instagram / Facebook
             <tr>
               <td align="center" style="padding:28px 24px 10px;">
                 <img src="cid:cashhay_logo"
-     width="120" height="120" alt="Cash Hay"
-     style="display:block;width:120px;height:120px;border:0;outline:none;text-decoration:none;border-radius:12px;-ms-interpolation-mode:bicubic;" />
+                     width="120" height="120" alt="Cash Hay"
+                     style="display:block;width:120px;height:120px;border:0;outline:none;text-decoration:none;border-radius:12px;-ms-interpolation-mode:bicubic;" />
               </td>
             </tr>
 
@@ -71,8 +74,6 @@ Suivez-nous : LinkedIn / X / Instagram / Facebook
               </td>
             </tr>
 
-                      
-
             <tr>
               <td style="padding:18px 28px 6px;">
                 <hr style="border:none;border-top:1px solid #000000;margin:0;" />
@@ -83,7 +84,8 @@ Suivez-nous : LinkedIn / X / Instagram / Facebook
               <td align="center" style="padding:8px 28px;">
                 <p style="margin:0;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:22px;color:#000000;">
                   Besoin d’aide ? Écrivez-nous à
-                  <a href="mailto:support@cash-hay.com" style="color:#16A34A;text-decoration:none;">support@cash-hay.com</a>.
+                  <a href="mailto:support@cash-hay.com" style="color:#16A34A;text-decoration:none;">support@cash-hay.com</a> ·
+                  <a href="${loginUrl}" target="_blank" rel="noopener" style="color:#16A34A;text-decoration:none;">Se connecter</a>
                 </p>
               </td>
             </tr>
@@ -124,4 +126,27 @@ Suivez-nous : LinkedIn / X / Instagram / Facebook
 </html>`;
 
   return { subject, text, html };
+}
+
+/* ------------------------------------------------------------------ */
+/* Envoi : helper dédié à ce template                                 */
+/* ------------------------------------------------------------------ */
+
+// Destinataire polymorphique : clair / id / enc / bidx
+type Recipient =
+  | { to: string }
+  | { toUserId: string }
+  | { toEmailEnc: string }
+  | { toEmailBidx: string };
+
+/**
+ * Envoie l'email "Dépôt confirmé" avec le logo inline (cid:cashhay_logo).
+ * Utilise SendGrid (via sendEmail) avec fallback SMTP si nécessaire.
+ */
+export async function sendDepositEmail(
+  recipient: Recipient,
+  props: Parameters<typeof buildDepositEmail>[0]
+) {
+  const built = buildDepositEmail(props);
+  return deliverEmailWithLogo(recipient, built);
 }

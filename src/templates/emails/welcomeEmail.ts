@@ -1,26 +1,36 @@
 // backend/src/templates/emails/welcomeEmail.ts
+import { deliverEmailWithLogo } from './_deliver';
+
 export function buildWelcomeEmail({
   firstName = '',
-  loginUrl = process.env.APP_LOGIN_URL || 'https://app.cash-hay.com/login',
+  loginUrl,
   reward = 25,
-}: { firstName?: string; loginUrl?: string; reward?: number }) {
+}: {
+  firstName?: string;
+  loginUrl?: string;
+  reward?: number;
+}) {
   const subject = 'Bienvenue chez Cash Hay';
+  const portalUrl =
+    loginUrl || process.env.APP_LOGIN_URL || 'https://app.cash-hay.com/login';
 
-  const text = `Bienvenue chez Cash Hay
+  const text = [
+    `Bienvenue ${firstName ? firstName : ''} chez Cash Hay`,
+    ``,
+    `Inscription réussie.`,
+    `Vous pouvez maintenant vous connecter. Votre identité doit encore être validée par un employé Cash Hay pour activer le compte.`,
+    ``,
+    `Après validation, vous recevrez ${reward} HTG pour chaque personne que vous invitez.`,
+    ``,
+    `Se connecter : ${portalUrl}`,
+    ``,
+    `Besoin d’aide ? support@cash-hay.com`,
+    `Suivez-nous : LinkedIn / X / Instagram / Facebook`,
+    ``,
+    `© Cash Hay – Tous droits réservés`,
+  ].join('\n');
 
-Inscription réussie.
-Vous pouvez maintenant vous connecter. Votre identité doit encore être validée par un employé Cash Hay pour activer le compte.
-
-Après validation, vous recevrez ${reward} HTG pour chaque personne que vous invitez.
-
-
-
-Besoin d’aide ? support@cash-hay.com
-Suivez-nous : LinkedIn / X / Instagram / Facebook
-
-© Cash Hay – Tous droits réservés`;
-
-  const html = `
+  const html = `<!doctype html>
 <html lang="fr" style="margin:0;padding:0;">
   <body style="margin:0;padding:0;background:#FFFFFF;">
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#FFFFFF;">
@@ -31,9 +41,9 @@ Suivez-nous : LinkedIn / X / Instagram / Facebook
             <!-- Header / Logo -->
             <tr>
               <td align="center" style="padding:28px 24px 10px;">
-               <img src="cid:cashhay_logo"
-     width="120" height="120" alt="Cash Hay"
-     style="display:block;width:120px;height:120px;border:0;outline:none;text-decoration:none;border-radius:12px;-ms-interpolation-mode:bicubic;" />
+                <img src="cid:cashhay_logo"
+                     width="120" height="120" alt="Cash Hay"
+                     style="display:block;width:120px;height:120px;border:0;outline:none;text-decoration:none;border-radius:12px;-ms-interpolation-mode:bicubic;" />
               </td>
             </tr>
 
@@ -41,7 +51,7 @@ Suivez-nous : LinkedIn / X / Instagram / Facebook
             <tr>
               <td align="center" style="padding:6px 24px 0;">
                 <h1 style="margin:0;font-family:Arial,Helvetica,sans-serif;font-size:24px;line-height:32px;color:#000000;">
-                  Bienvenue chez Cash Hay
+                  Bienvenue ${firstName ? firstName : ''} chez Cash Hay
                 </h1>
               </td>
             </tr>
@@ -60,23 +70,27 @@ Suivez-nous : LinkedIn / X / Instagram / Facebook
             <tr>
               <td align="center" style="padding:10px 28px 0;">
                 <p style="margin:0;font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:22px;color:#000000;">
-                  Après validation, vous recevrez <strong>25&nbsp;HTG</strong> pour chaque personne que vous invitez.
+                  Après validation, vous recevrez <strong>${reward}&nbsp;HTG</strong> pour chaque personne que vous invitez.
                 </p>
               </td>
             </tr>
 
             <!-- Bouton -->
-            
-                </table>
-              </td>
-            </tr>
-
-            <!-- Lien brut -->
             <tr>
-              <td align="center" style="padding:6px 28px 0;">
-                <p style="margin:0;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:18px;color:#000000;">
+              <td align="center" style="padding:16px 28px 0;">
+                <table role="presentation" cellpadding="0" cellspacing="0">
+                  <tr>
+                    <td style="border-radius:10px;background:#16A34A;">
+                      <a href="${portalUrl}" target="_blank" rel="noopener"
+                         style="display:inline-block;padding:12px 22px;font-family:Arial,Helvetica,sans-serif;font-size:16px;color:#FFFFFF;text-decoration:none;border-radius:10px;">
+                        Se connecter
+                      </a>
+                    </td>
+                  </tr>
+                </table>
+                <p style="margin:10px 0 0;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:18px;color:#000000;">
                   Si le bouton ne s’affiche pas, copiez-collez :<br/>
-                  <span style="color:#16A34A;">https://app.cash-hay.com/login</span>
+                  <span style="color:#16A34A;">${portalUrl}</span>
                 </p>
               </td>
             </tr>
@@ -136,7 +150,30 @@ Suivez-nous : LinkedIn / X / Instagram / Facebook
       </tr>
     </table>
   </body>
-`;
+</html>`;
 
   return { subject, text, html };
+}
+
+/* ------------------------------------------------------------------ */
+/* Envoi : helper dédié à ce template                                 */
+/* ------------------------------------------------------------------ */
+
+// Destinataire polymorphique : clair / id / enc / bidx
+type Recipient =
+  | { to: string }
+  | { toUserId: string }
+  | { toEmailEnc: string }
+  | { toEmailBidx: string };
+
+/**
+ * Envoie l'email "Bienvenue" avec le logo inline (cid:cashhay_logo).
+ * Utilise SendGrid (via sendEmail) avec fallback SMTP si nécessaire.
+ */
+export async function sendWelcomeEmail(
+  recipient: Recipient,
+  props: Parameters<typeof buildWelcomeEmail>[0]
+) {
+  const built = buildWelcomeEmail(props);
+  return deliverEmailWithLogo(recipient, built);
 }

@@ -1,9 +1,11 @@
 // backend/src/templates/emails/identityValidatedEmail.ts
+import { deliverEmailWithLogo } from './_deliver';
+
 export function buildIdentityValidatedEmail({
   firstName = '',
   lastName = '',
   loginUrl = process.env.APP_LOGIN_URL || 'https://app.cash-hay.com/login',
-  reward = 25, // si tu offres un bonus de parrainage après validation
+  reward = 25, // bonus de parrainage après validation
 }: {
   firstName?: string;
   lastName?: string;
@@ -22,7 +24,7 @@ Vous pouvez maintenant :
 - Demander votre carte physique et la personnaliser depuis l’app.
 - Rester conforme en respectant nos Conditions d’utilisation et les normes internationales.
 
-
+Se connecter : ${loginUrl}
 
 Besoin d’aide ? support@cash-hay.com
 Suivez-nous : LinkedIn / X / Instagram / Facebook
@@ -41,8 +43,8 @@ Suivez-nous : LinkedIn / X / Instagram / Facebook
             <tr>
               <td align="center" style="padding:28px 24px 10px;">
                 <img src="cid:cashhay_logo"
-     width="120" height="120" alt="Cash Hay"
-     style="display:block;width:120px;height:120px;border:0;outline:none;text-decoration:none;border-radius:12px;-ms-interpolation-mode:bicubic;" />
+                     width="120" height="120" alt="Cash Hay"
+                     style="display:block;width:120px;height:120px;border:0;outline:none;text-decoration:none;border-radius:12px;-ms-interpolation-mode:bicubic;" />
               </td>
             </tr>
 
@@ -80,11 +82,19 @@ Suivez-nous : LinkedIn / X / Instagram / Facebook
               </td>
             </tr>
 
-            
             <!-- Séparateur -->
             <tr>
               <td style="padding:18px 28px 6px;">
                 <hr style="border:none;border-top:1px solid #000000;margin:0;" />
+              </td>
+            </tr>
+
+            <!-- Lien Se connecter -->
+            <tr>
+              <td align="center" style="padding:8px 28px 0;">
+                <p style="margin:0;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:22px;color:#000000;">
+                  <a href="${loginUrl}" target="_blank" rel="noopener" style="color:#16A34A;text-decoration:none;">Se connecter</a>
+                </p>
               </td>
             </tr>
 
@@ -148,4 +158,27 @@ Suivez-nous : LinkedIn / X / Instagram / Facebook
 </html>`;
 
   return { subject, text, html };
+}
+
+/* ------------------------------------------------------------------ */
+/* Envoi : helper dédié à ce template                                  */
+/* ------------------------------------------------------------------ */
+
+// Destinataire polymorphique : clair / id / enc / bidx
+type Recipient =
+  | { to: string }
+  | { toUserId: string }
+  | { toEmailEnc: string }
+  | { toEmailBidx: string };
+
+/**
+ * Envoie l'email "Identité validée" avec le logo inline (cid:cashhay_logo).
+ * Utilise SendGrid (via sendEmail) avec fallback SMTP si nécessaire.
+ */
+export async function sendIdentityValidatedEmail(
+  recipient: Recipient,
+  props: Parameters<typeof buildIdentityValidatedEmail>[0]
+) {
+  const built = buildIdentityValidatedEmail(props);
+  return deliverEmailWithLogo(recipient, built);
 }

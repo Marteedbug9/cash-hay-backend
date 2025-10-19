@@ -1,10 +1,12 @@
 // backend/src/templates/emails/withdrawalEmail.ts
+import { deliverEmailWithLogo } from './_deliver';
+
 export function buildWithdrawalEmail({
   firstName = '',
   amountLabel = '0 HTG',
   balanceAfterLabel = '',
   txRef = '',
-  loginUrl = process.env.APP_LOGIN_URL || 'https://app.cash-hay.com/login',
+  loginUrl,
 }: {
   firstName?: string;
   amountLabel?: string;
@@ -13,18 +15,40 @@ export function buildWithdrawalEmail({
   loginUrl?: string;
 }) {
   const subject = 'Retrait confirmé - Cash Hay';
+  const portalUrl =
+    loginUrl || process.env.APP_LOGIN_URL || 'https://app.cash-hay.com/login';
 
-  const text =
-`Bonjour ${firstName || ''},
+  const text = [
+    `Bonjour ${firstName || ''},`,
+    ``,
+    `Votre retrait de ${amountLabel} a été exécuté depuis votre compte Cash Hay.` +
+      (balanceAfterLabel ? ` Nouveau solde : ${balanceAfterLabel}.` : ''),
+    txRef ? `Référence : ${txRef}` : '',
+    ``,
+    `Se connecter : ${portalUrl}`,
+    ``,
+    `Merci d’avoir choisi CASH HAY. En respectant les lois et nos termes et conditions, vous serez toujours le bienvenu dans la famille.`,
+    `Votre argent est protégé, disponible et utilisable partout dans le monde.`,
+    ``,
+    `Support : support@cash-hay.com`,
+    `Suivez-nous : LinkedIn / X / Instagram / Facebook`,
+    `© Cash Hay – Tous droits réservés`,
+  ]
+    .filter(Boolean)
+    .join('\n');
 
-Votre retrait de ${amountLabel} a été exécuté depuis votre compte Cash Hay.${balanceAfterLabel ? ` Nouveau solde : ${balanceAfterLabel}.` : ''}${txRef ? `\nRéférence : ${txRef}` : ''}
-
-Merci d’avoir choisi CASH HAY. En respectant les lois, nos termes et conditions, vous serez toujours le bienvenu dans la famille. Votre argent est protégé, disponible et utilisable partout dans le monde.
-
-
-Support : support@cash-hay.com
-Suivez-nous : LinkedIn / X / Instagram / Facebook
-© Cash Hay – Tous droits réservés`;
+  const detailsHtml =
+    balanceAfterLabel || txRef
+      ? `
+      <tr>
+        <td align="center" style="padding:8px 28px 0;">
+          <p style="margin:0;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:20px;color:#000000;">
+            ${balanceAfterLabel ? `Nouveau solde&nbsp;: <strong>${balanceAfterLabel}</strong><br/>` : ''}
+            ${txRef ? `Référence&nbsp;: <strong>${txRef}</strong>` : ''}
+          </p>
+        </td>
+      </tr>`
+      : '';
 
   const html = `<!doctype html>
 <html lang="fr" style="margin:0;padding:0;">
@@ -36,8 +60,8 @@ Suivez-nous : LinkedIn / X / Instagram / Facebook
             <tr>
               <td align="center" style="padding:28px 24px 10px;">
                 <img src="cid:cashhay_logo"
-     width="120" height="120" alt="Cash Hay"
-     style="display:block;width:120px;height:120px;border:0;outline:none;text-decoration:none;border-radius:12px;-ms-interpolation-mode:bicubic;" />
+                     width="120" height="120" alt="Cash Hay"
+                     style="display:block;width:120px;height:120px;border:0;outline:none;text-decoration:none;border-radius:12px;-ms-interpolation-mode:bicubic;" />
               </td>
             </tr>
 
@@ -54,8 +78,27 @@ Suivez-nous : LinkedIn / X / Instagram / Facebook
                 <p style="margin:0;font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:22px;color:#000000;">
                   Bonjour${firstName ? ' <strong>' + firstName + '</strong>' : ''}, votre retrait de
                   <strong>${amountLabel}</strong> a été exécuté depuis votre compte Cash Hay.
-                  ${balanceAfterLabel ? `<br/>Nouveau solde : <strong>${balanceAfterLabel}</strong>.` : ''}
-                  ${txRef ? `<br/>Référence : <strong>${txRef}</strong>.` : ''}
+                </p>
+              </td>
+            </tr>
+
+            ${detailsHtml}
+
+            <tr>
+              <td align="center" style="padding:16px 28px 0;">
+                <table role="presentation" cellpadding="0" cellspacing="0">
+                  <tr>
+                    <td style="border-radius:10px;background:#16A34A;">
+                      <a href="${portalUrl}" target="_blank" rel="noopener"
+                         style="display:inline-block;padding:12px 22px;font-family:Arial,Helvetica,sans-serif;font-size:16px;color:#FFFFFF;text-decoration:none;border-radius:10px;">
+                        Se connecter
+                      </a>
+                    </td>
+                  </tr>
+                </table>
+                <p style="margin:10px 0 0;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:18px;color:#000000;">
+                  Si le bouton ne s’affiche pas, copiez-collez :<br/>
+                  <span style="color:#16A34A;">${portalUrl}</span>
                 </p>
               </td>
             </tr>
@@ -63,15 +106,13 @@ Suivez-nous : LinkedIn / X / Instagram / Facebook
             <tr>
               <td align="center" style="padding:10px 28px 0;">
                 <p style="margin:0;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:21px;color:#000000;">
-                  Merci d’avoir choisi <strong>CASH HAY</strong>. En respectant les lois, nos
+                  Merci d’avoir choisi <strong>CASH HAY</strong>. En respectant les lois et nos
                   <em>termes et conditions</em>, vous serez toujours le bienvenu dans la famille.
                   Votre argent est <strong>protégé</strong>, <strong>disponible</strong> et
                   <strong>utilisable partout dans le monde</strong>.
                 </p>
               </td>
             </tr>
-
-           
 
             <tr>
               <td style="padding:18px 28px 6px;">
@@ -124,4 +165,27 @@ Suivez-nous : LinkedIn / X / Instagram / Facebook
 </html>`;
 
   return { subject, text, html };
+}
+
+/* ------------------------------------------------------------------ */
+/* Envoi : helper dédié à ce template                                 */
+/* ------------------------------------------------------------------ */
+
+// Destinataire polymorphique : clair / id / enc / bidx
+type Recipient =
+  | { to: string }
+  | { toUserId: string }
+  | { toEmailEnc: string }
+  | { toEmailBidx: string };
+
+/**
+ * Envoie l'email "Retrait confirmé" avec le logo inline (cid:cashhay_logo).
+ * Utilise SendGrid (via sendEmail) avec fallback SMTP si nécessaire.
+ */
+export async function sendWithdrawalEmail(
+  recipient: Recipient,
+  props: Parameters<typeof buildWithdrawalEmail>[0]
+) {
+  const built = buildWithdrawalEmail(props);
+  return deliverEmailWithLogo(recipient, built);
 }

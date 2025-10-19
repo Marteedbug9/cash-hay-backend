@@ -1,3 +1,6 @@
+// backend/src/templates/emails/moneyReceivedEmail.ts
+import { deliverEmailWithLogo } from './_deliver';
+
 export type MoneyReceivedEmailProps = {
   recipientFirstName?: string;
   senderFirstName?: string;
@@ -20,7 +23,11 @@ export function buildMoneyReceivedEmail({
   appUrl,
 }: MoneyReceivedEmailProps) {
   const subject = 'Transfert reçu - Cash Hay';
-  const portalUrl = appUrl || loginUrl || process.env.APP_LOGIN_URL || 'https://app.cash-hay.com/login';
+  const portalUrl =
+    appUrl ||
+    loginUrl ||
+    process.env.APP_LOGIN_URL ||
+    'https://app.cash-hay.com/login';
 
   const text = [
     `Bonjour ${recipientFirstName || ''},`,
@@ -28,10 +35,13 @@ export function buildMoneyReceivedEmail({
     `Vous avez reçu ${amountLabel} via Cash Hay de ${senderFirstName}.`,
     txRef ? `Référence: ${txRef}` : '',
     createdAtLabel ? `Date: ${createdAtLabel}` : '',
-
+    ``,
+    `Se connecter: ${portalUrl}`,
     ``,
     `Merci d’utiliser Cash Hay.`,
-  ].filter(Boolean).join('\n');
+  ]
+    .filter(Boolean)
+    .join('\n');
 
   const html = `<!doctype html>
 <html lang="fr" style="margin:0;padding:0;">
@@ -43,8 +53,8 @@ export function buildMoneyReceivedEmail({
             <tr>
               <td align="center" style="padding:28px 24px 10px;">
                 <img src="cid:cashhay_logo"
-     width="120" height="120" alt="Cash Hay"
-     style="display:block;width:120px;height:120px;border:0;outline:none;text-decoration:none;border-radius:12px;-ms-interpolation-mode:bicubic;" />
+                     width="120" height="120" alt="Cash Hay"
+                     style="display:block;width:120px;height:120px;border:0;outline:none;text-decoration:none;border-radius:12px;-ms-interpolation-mode:bicubic;" />
               </td>
             </tr>
             <tr>
@@ -73,7 +83,15 @@ export function buildMoneyReceivedEmail({
               </td>
             </tr>` : ''}
 
-            
+            <tr>
+              <td align="center" style="padding:14px 28px 0;">
+                <a href="${portalUrl}" target="_blank" rel="noopener"
+                   style="display:inline-block;background:#16A34A;color:#FFFFFF;border-radius:10px;padding:12px 20px;font-family:Arial,Helvetica,sans-serif;font-size:15px;text-decoration:none;">
+                  Se connecter
+                </a>
+              </td>
+            </tr>
+
             <tr><td style="padding:18px 28px 6px;"><hr style="border:none;border-top:1px solid #000000;margin:0;" /></td></tr>
 
             <tr>
@@ -120,4 +138,27 @@ export function buildMoneyReceivedEmail({
 </html>`;
 
   return { subject, text, html };
+}
+
+/* ------------------------------------------------------------------ */
+/* Envoi : helper dédié à ce template                                  */
+/* ------------------------------------------------------------------ */
+
+// Destinataire polymorphique : clair / id / enc / bidx
+type Recipient =
+  | { to: string }
+  | { toUserId: string }
+  | { toEmailEnc: string }
+  | { toEmailBidx: string };
+
+/**
+ * Envoie l'email "Transfert reçu" avec le logo inline (cid:cashhay_logo).
+ * Utilise SendGrid (via sendEmail) avec fallback SMTP si nécessaire.
+ */
+export async function sendMoneyReceivedEmail(
+  recipient: Recipient,
+  props: Parameters<typeof buildMoneyReceivedEmail>[0]
+) {
+  const built = buildMoneyReceivedEmail(props);
+  return deliverEmailWithLogo(recipient, built);
 }

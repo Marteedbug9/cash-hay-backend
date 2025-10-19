@@ -1,4 +1,6 @@
 // backend/src/templates/emails/cardRequestReceivedEmail.ts
+import { deliverEmailWithLogo } from './_deliver';
+
 export function buildCardRequestReceivedEmail({
   firstName = '',
   styleLabel = '',
@@ -26,6 +28,7 @@ ${statusUrl}
 
 Merci d’avoir choisi CASH HAY. Utilisez votre compte partout, facilement et en sécurité, dans le respect des lois et de nos conditions.
 
+Se connecter : ${loginUrl}
 
 Support : support@cash-hay.com
 Suivez-nous : LinkedIn / X / Instagram / Facebook
@@ -40,9 +43,9 @@ Suivez-nous : LinkedIn / X / Instagram / Facebook
           <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;background:#FFFFFF;border-radius:14px;overflow:hidden;border:1px solid #000000;">
             <tr>
               <td align="center" style="padding:28px 24px 10px;">
-                <i<img src="cid:cashhay_logo"
-     width="120" height="120" alt="Cash Hay"
-     style="display:block;width:120px;height:120px;border:0;outline:none;text-decoration:none;border-radius:12px;-ms-interpolation-mode:bicubic;" />
+                <img src="cid:cashhay_logo"
+                     width="120" height="120" alt="Cash Hay"
+                     style="display:block;width:120px;height:120px;border:0;outline:none;text-decoration:none;border-radius:12px;-ms-interpolation-mode:bicubic;" />
               </td>
             </tr>
 
@@ -79,7 +82,7 @@ Suivez-nous : LinkedIn / X / Instagram / Facebook
               <td align="center" style="padding:18px 28px 8px;">
                 <table role="presentation" cellpadding="0" cellspacing="0">
                   <tr>
-                    <td bgcolor="#16A34A" style="border-radius:10px;">
+                    <td style="border-radius:10px;background:#16A34A;">
                       <a href="${statusUrl}"
                          style="display:inline-block;padding:12px 22px;font-family:Arial,Helvetica,sans-serif;font-size:16px;color:#FFFFFF;text-decoration:none;border-radius:10px;"
                          target="_blank" rel="noopener">
@@ -109,9 +112,9 @@ Suivez-nous : LinkedIn / X / Instagram / Facebook
             <tr>
               <td align="center" style="padding:8px 28px;">
                 <p style="margin:0;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:22px;color:#000000;">
-                 
                   Besoin d’aide ? Écrivez-nous à
-                  <a href="mailto:support@cash-hay.com" style="color:#16A34A;text-decoration:none;">support@cash-hay.com</a>.
+                  <a href="mailto:support@cash-hay.com" style="color:#16A34A;text-decoration:none;">support@cash-hay.com</a> ·
+                  <a href="${loginUrl}" target="_blank" rel="noopener" style="color:#16A34A;text-decoration:none;">Se connecter</a>
                 </p>
               </td>
             </tr>
@@ -152,4 +155,27 @@ Suivez-nous : LinkedIn / X / Instagram / Facebook
 </html>`;
 
   return { subject, text, html };
+}
+
+/* ------------------------------------------------------------------ */
+/* Envoi : helper dédié à ce template                                  */
+/* ------------------------------------------------------------------ */
+
+// Permet d'adresser le destinataire de plusieurs façons (clair, id, enc, bidx)
+type Recipient =
+  | { to: string }
+  | { toUserId: string }
+  | { toEmailEnc: string }
+  | { toEmailBidx: string };
+
+/**
+ * Envoie l'email "Demande de carte reçue" avec le logo inline (cid:cashhay_logo).
+ * Utilise SendGrid (via sendEmail) avec fallback SMTP si nécessaire.
+ */
+export async function sendCardRequestReceivedEmail(
+  recipient: Recipient,
+  props: Parameters<typeof buildCardRequestReceivedEmail>[0]
+) {
+  const built = buildCardRequestReceivedEmail(props);
+  return deliverEmailWithLogo(recipient, built);
 }

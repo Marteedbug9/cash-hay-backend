@@ -231,11 +231,11 @@ const sendEmail = async (options: EmailOptions | LegacyEmailOptions): Promise<Se
         : {}),
     });
 
-    // Essaye de récupérer un id de message SG si dispo
+    // ✅ headers est un objet (IncomingHttpHeaders), pas un Response avec .get()
+    const headers: Record<string, string | string[] | undefined> = (resp && (resp.headers as any)) || {};
     const sgMessageId =
-      // @sendgrid/mail (node-fetch Response) -> header name variant
-      (resp && (resp.headers as any)?.get?.('x-message-id')) ||
-      (resp && (resp.headers as any)?.get?.('x-msg-id')) ||
+      (headers['x-message-id'] as string) ||
+      (headers['x-msg-id'] as string) ||
       'sendgrid';
 
     console.log(`📧(SG) Email envoyé à ${maskEmailForLog(to)} ✅`);
