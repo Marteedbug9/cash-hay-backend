@@ -13,10 +13,12 @@ import {
   blindIndexEmail,
   blindIndexPhone,
 } from '../utils/crypto';
+import { deliverEmailWithLogo } from '../templates/emails/_deliver';
 import { buildMoneyReceivedEmail } from '../templates/emails/moneyReceivedEmail';
 import { buildMoneySentEmail } from '../templates/emails/moneySentEmail';
 import { buildDepositEmail } from '../templates/emails/depositEmail';
 import { buildWithdrawalEmail } from '../templates/emails/withdrawalEmail';
+import { buildMoneyRequestEmail } from '../templates/emails/MoneyRequestEmail';
 
 
 // Fonction pour envoyer vers ta banque locale (ex: via API REST interne, à adapter)
@@ -430,7 +432,7 @@ export const transfer = async (req: Request, res: Response) => {
 
   const ip_address =
     (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '';
-  const user_agent = req.headers['user-agent'] || '';
+  const user_agent = (req.headers['user-agent'] as string) || '';
 
   if (!senderId) {
     return res.status(401).json({ error: 'Authentification requise.' });
@@ -576,86 +578,85 @@ export const transfer = async (req: Request, res: Response) => {
 
     await client.query('COMMIT');
 
-    // ========= Notifications (méthode A) =========
+    // ========= Notifications =========
 
-    // Récup infos expéditeur (pour email + push/SMS)
+    // Infos expéditeur/destinataire (pour templates + push/SMS)
     const senderRes = await pool.query(
       `SELECT first_name, email_enc, phone_enc, expo_push_token FROM users WHERE id = $1`,
       [senderId]
     );
     const senderRow = senderRes.rows[0] || {};
     const senderFirst = (senderRow.first_name ?? '') as string;
-
     const recipientFirst = (recipientUser.first_name ?? '') as string;
 
-    // Destinataire
     const rEmail = decryptNullable(recipientUser.email_enc) ?? undefined;
     const rPhone = decryptNullable(recipientUser.phone_enc) ?? undefined;
     const rPush  = recipientUser.expo_push_token ?? undefined;
 
-    const recipientPayload: {
-      title: string;
-      body: string;
-      subject: string;
-      sms?: string;
-      expoPushToken?: string;
-      email?: string;
-      phone?: string;
-    } = {
-      title: 'Transfert reçu',
-      subject: 'Transfert reçu - Cash Hay',
-      body: `Bonjour${recipientFirst ? ' ' + recipientFirst : ''}, vous avez reçu ${amt} HTG via Cash Hay.`,
-      sms:  `Vous avez reçu ${amt} HTG via Cash Hay.`,
-    };
-    if (rPush)  recipientPayload.expoPushToken = rPush;
-    if (rEmail) recipientPayload.email = rEmail;
-    if (rPhone) recipientPayload.phone = rPhone;
-
-    // Expéditeur
     const sEmail = decryptNullable(senderRow.email_enc) ?? undefined;
     const sPhone = decryptNullable(senderRow.phone_enc) ?? undefined;
     const sPush  = senderRow.expo_push_token ?? undefined;
 
-    const senderPayload: {
-      title: string;
-      body: string;
-      subject: string;
-      sms?: string;
-      expoPushToken?: string;
-      email?: string;
-      phone?: string;
-    } = {
+    // Push/SMS
+    const recipientPayload = {
+      title: 'Transfert reçu',
+      subject: 'Transfert reçu - Cash Hay',
+      body: `Bonjour${recipientFirst ? ' ' + recipientFirst : ''}, vous avez reçu ${amt} HTG via Cash Hay.`,
+      sms:  `Vous avez reçu ${amt} HTG via Cash Hay.`,
+      expoPushToken: rPush,
+      email: rEmail,
+      phone: rPhone,
+    };
+    const senderPayload = {
       title: 'Transfert envoyé',
       subject: 'Transfert envoyé - Cash Hay',
       body: `Bonjour${senderFirst ? ' ' + senderFirst : ''}, votre transfert de ${amt} HTG a été envoyé.`,
       sms:  `Votre transfert de ${amt} HTG a été envoyé.`,
+      expoPushToken: sPush,
+      email: sEmail,
+      phone: sPhone,
     };
-    if (sPush)  senderPayload.expoPushToken = sPush;
-    if (sEmail) senderPayload.email = sEmail;
-    if (sPhone) senderPayload.phone = sPhone;
-
-    // Envoi push/SMS/email (utilitaire central)
     try { await notifyUser(recipientPayload); } catch (e) { console.error('notifyUser destinataire:', e); }
     try { await notifyUser(senderPayload);    } catch (e) { console.error('notifyUser expéditeur:', e); }
 
-    // ✉️ Emails HTML (optionnel)
+    // ========= Emails HTML (avec logo inline) =========
     const amountLabel = `${amt.toFixed(2)} HTG`;
+    const createdAtLabel = new Date().toLocaleString('fr-FR');
 
-    if (rEmail) {
-      const tpl = buildMoneyReceivedEmail({
+    // Destinataire : moneyReceivedEmail
+    try {
+      const builtR = buildMoneyReceivedEmail({
         recipientFirstName: recipientFirst,
         senderFirstName: senderFirst,
         amountLabel,
+        txRef: txId,
+        createdAtLabel,
       });
-      await sendEmail({ to: rEmail, subject: 'Transfert reçu - Cash Hay', text: tpl.text, html: tpl.html });
+      await deliverEmailWithLogo(
+        { toUserId: recipientId },
+        builtR,
+        { priority: 'normal' }
+      );
+    } catch (e) {
+      console.error('Email destinataire (received) échoué:', e);
     }
-    if (sEmail) {
-      const tpl2 = buildMoneySentEmail({
+
+    // Expéditeur : moneySentEmail
+    try {
+      const builtS = buildMoneySentEmail({
         senderFirstName: senderFirst,
         recipientFirstName: recipientFirst,
         amountLabel,
+        txRef: txId,
+        createdAtLabel,
       });
-      await sendEmail({ to: sEmail, subject: 'Transfert envoyé - Cash Hay', text: tpl2.text, html: tpl2.html });
+      await deliverEmailWithLogo(
+        { toUserId: senderId },
+        builtS,
+        { priority: 'normal' }
+      );
+    } catch (e) {
+      console.error('Email expéditeur (sent) échoué:', e);
     }
 
     return res.status(200).json({ message: 'Transfert effectué avec succès.', tx_id: txId });
@@ -746,7 +747,7 @@ export const requestMoney = async (req: Request, res: Response) => {
 
   const ip_address =
     (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '';
-  const user_agent = req.headers['user-agent'] || '';
+  const user_agent = (req.headers['user-agent'] as string) || '';
 
   if (!requesterId) return res.status(401).json({ error: 'Authentification requise.' });
   if (!recipientUsername || !amount || isNaN(Number(amount)) || Number(amount) <= 0) {
@@ -782,7 +783,7 @@ export const requestMoney = async (req: Request, res: Response) => {
     }
     const memberId: string = memberRes.rows[0].id;
 
-    // 2) Récupérer l’utilisateur destinataire lié à ce membre (SANS expo_push_token ici)
+    // 2) Récupérer l’utilisateur destinataire lié à ce membre
     const recipientUserRes = await client.query(
       `SELECT id, first_name, last_name, email_enc, phone_enc, photo_url
          FROM users
@@ -860,7 +861,7 @@ export const requestMoney = async (req: Request, res: Response) => {
       [uuidv4(), requesterId, 'request_money', ip_address, user_agent, `Demande ${amt} HTG à user:${recipientId}`]
     );
 
-    // 6) Récupérer les infos de l’expéditeur (incluant SON contact depuis members.contact)
+    // 6) Infos expéditeur (incluant son members.contact)
     const senderRes = await client.query(
       `SELECT u.first_name, u.last_name, u.photo_url, COALESCE(m.contact,'') AS member_contact
          FROM users u
@@ -870,22 +871,23 @@ export const requestMoney = async (req: Request, res: Response) => {
       [requesterId]
     );
     const sender = senderRes.rows[0] || {};
-    const from_contact = (sender.member_contact || '').trim(); // 👈 vient de members.contact
+    const requesterFirst = (sender.first_name || '') as string;
+    const requesterLabel = ((sender.member_contact || '') as string).trim(); // 👈 members.contact (email/tel affichable)
 
-    // 7) Notif BDD (en chiffrant côté addNotification)
+    // 7) Notif BDD (chiffrement géré côté helper)
     await addNotification({
       user_id: recipientId,                 // le destinataire reçoit la notif
       type: 'request',
       from_first_name: sender.first_name || '',
       from_last_name:  sender.last_name  || '',
-      from_contact,                         // 👈 members.contact de l’expéditeur
+      from_contact: requesterLabel,        // 👈 members.contact de l’émetteur
       from_profile_image: sender.photo_url || '',
       amount: amt,
       status: 'pending',
       transaction_id: txId,
     });
 
-    // 8) Optionnel : push uniquement si la colonne existe
+    // 8) Push (si la colonne existe)
     let expoPushToken: string | null = null;
     const { rows: hasCol } = await client.query(`
       SELECT EXISTS (
@@ -897,29 +899,65 @@ export const requestMoney = async (req: Request, res: Response) => {
       const tok = await client.query('SELECT expo_push_token FROM users WHERE id = $1', [recipientId]);
       expoPushToken = tok.rows[0]?.expo_push_token ?? null;
     }
+
     await client.query('COMMIT');
 
-    // 9) Notifications asynchrones (email + push si dispo)
+    // 9) Emails + Push (asynchrone, hors transaction)
     (async () => {
       try {
-        const r = await pool.query('SELECT email_enc FROM users WHERE id = $1', [recipientId]);
-        const emailPlain = decryptNullable(r.rows[0]?.email_enc) || null;
-        if (emailPlain) {
-          await sendEmail({
-            to: emailPlain,
-            subject: 'Demande d’argent Cash Hay',
-            text: `Vous avez reçu une demande d’argent de ${amt} HTG sur Cash Hay.`,
-          });
-        }
+        const amountLabel = `${amt.toFixed(2)} HTG`;
+        const createdAtLabel = new Date().toLocaleString('fr-FR');
+
+        // a) Email DESTINATAIRE : variante "received"
+        const builtForRecipient = buildMoneyRequestEmail({
+          variant: 'received',
+          requesterFirstName: requesterFirst,
+          requesterLabel: requesterLabel,      // email/tel ou alias de l’émetteur
+          amountLabel,
+          requestRef: txId,
+          createdAtLabel,
+          // payUrl: vous pouvez ajouter un deep-link si vous en avez un
+        });
+        await deliverEmailWithLogo(
+          { toUserId: recipientId },           // ✅ pas d'email en clair
+          builtForRecipient,
+          { priority: 'normal' }
+        );
+
+        // b) Email ÉMETTEUR : variante "sent"
+        const rNameRes = await pool.query(
+          `SELECT first_name FROM users WHERE id = $1 LIMIT 1`,
+          [recipientId]
+        );
+        const recipientFirstName = (rNameRes.rows[0]?.first_name || '') as string;
+
+        const builtForRequester = buildMoneyRequestEmail({
+          variant: 'sent',
+          recipientFirstName,
+          amountLabel,
+          requestRef: txId,
+          createdAtLabel,
+        });
+        await deliverEmailWithLogo(
+          { toUserId: requesterId },           // ✅ pas d'email en clair
+          builtForRequester,
+          { priority: 'normal' }
+        );
+
+        // c) Push (si disponible)
         if (expoPushToken) {
-          await sendPushNotification(expoPushToken, 'Demande d’argent', `Vous avez reçu ${amt} HTG.`);
+          await sendPushNotification(
+            expoPushToken,
+            'Demande d’argent',
+            `Vous avez reçu une demande de ${amountLabel}.`
+          );
         }
       } catch (e) {
         console.error('Notif async requestMoney:', e);
       }
     })();
 
-    return res.status(200).json({ message: 'Demande d’argent enregistrée avec succès.' });
+    return res.status(200).json({ message: 'Demande d’argent enregistrée avec succès.', tx_id: txId });
   } catch (error) {
     await client.query('ROLLBACK');
     console.error('❌ Erreur requestMoney :', error);
