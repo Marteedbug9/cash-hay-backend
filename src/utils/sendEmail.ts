@@ -1,6 +1,8 @@
 // src/utils/sendEmail.ts
 import nodemailer, { SentMessageInfo } from 'nodemailer';
 import sgMail from '@sendgrid/mail';
+import fs from 'fs/promises';
+import path from 'path';
 import db from '../config/db';
 import { decryptNullable } from '../utils/crypto';
 
@@ -8,11 +10,11 @@ type LegacyEmailOptions = { to: string; subject: string; text?: string; html?: s
 
 export type EmailAttachment = {
   filename?: string;
-  path?: string;
-  content?: Buffer | string;
-  cid?: string;
+  path?: string;                // pris en charge pour SG (converti en base64) et SMTP
+  content?: Buffer | string;    // Buffer ou string (base64 si encoding === 'base64')
+  cid?: string;                 // pour inline <img src="cid:...">
   contentType?: string;
-  encoding?: string;
+  encoding?: string;            // 'base64' si content est déjà encodé en base64 (string)
 };
 
 export interface EmailOptions {
@@ -20,14 +22,18 @@ export interface EmailOptions {
   toUserId?: string;
   toEmailEnc?: string;
   toEmailBidx?: string;
+
   subject: string;
   text?: string;
   html?: string;
+
   attachments?: EmailAttachment[];
   headers?: Record<string, string>;
   priority?: 'high' | 'normal' | 'low';
+
   fromEmail?: string;
   fromName?: string;
+
   replyToEmail?: string;
   replyToName?: string;
 }
@@ -98,7 +104,6 @@ function buildGmailTransport() {
     auth: { user: smtpUser, pass: smtpPass },
     connectionTimeout: 8000,
     socketTimeout: 10000,
-   
     family: 4, // IPv4
   } as any);
 }
@@ -118,13 +123,14 @@ function buildHostPortTransport() {
     connectionTimeout: 8000,
     socketTimeout: 10000,
     tls: { servername: host, minVersion: 'TLSv1.2' },
-   
     family: 4,
   } as any);
 }
 
 async function makeSmtpTransport() {
-  const isGmail = (process.env.EMAIL_HOST || '').includes('gmail');
+  const isGmail =
+    (process.env.EMAIL_HOST || '').includes('gmail') ||
+    (!process.env.EMAIL_HOST && (process.env.EMAIL_USER || '').toLowerCase().endsWith('@gmail.com'));
   if (isGmail) return buildGmailTransport();
   return buildHostPortTransport();
 }
@@ -136,23 +142,44 @@ function sgInit() {
   sgMail.setApiKey(key);
 }
 
-function mapSgAttachments(atts?: EmailAttachment[]) {
+async function fileToBase64(p: string): Promise<string> {
+  const abs = path.isAbsolute(p) ? p : path.join(process.cwd(), p);
+  const buf = await fs.readFile(abs);
+  return buf.toString('base64');
+}
+
+async function mapSgAttachments(atts?: EmailAttachment[]) {
   if (!atts?.length) return undefined;
-  return atts.map(a => {
-    const base64 =
-      typeof a.content === 'string'
-        ? a.content
-        : a.content
-        ? Buffer.from(a.content).toString('base64')
-        : undefined;
-    return {
-      content: base64,
-      filename: a.filename,
-      type: a.contentType,
-      disposition: 'attachment',
-      content_id: a.cid,
-    };
-  });
+
+  const out = await Promise.all(
+    atts.map(async (a) => {
+      let base64: string | undefined;
+
+      if (a.content) {
+        if (typeof a.content === 'string') {
+          // si l'appelant a précisé encoding:'base64', on respecte tel quel
+          base64 = a.encoding === 'base64' ? a.content : Buffer.from(a.content, 'utf8').toString('base64');
+        } else {
+          base64 = Buffer.from(a.content).toString('base64');
+        }
+      } else if (a.path) {
+        base64 = await fileToBase64(a.path);
+      }
+
+      // SG: disposition 'inline' requise pour que content_id (cid) fonctionne comme <img src="cid:...">
+      const disposition = a.cid ? 'inline' : 'attachment';
+
+      return {
+        content: base64,
+        filename: a.filename || (a.path ? path.basename(a.path) : undefined),
+        type: a.contentType,
+        disposition,
+        content_id: a.cid,
+      };
+    })
+  );
+
+  return out;
 }
 
 /* ----------------------------- sendEmail ---------------------------- */
@@ -181,7 +208,7 @@ const sendEmail = async (options: EmailOptions | LegacyEmailOptions): Promise<Se
       ? stripHtml(options.html)
       : undefined;
 
-  // ✅ Garantir une string pour les SDK typés "string"
+  // ✅ Garantir une string pour SG & SMTP
   const textForSg: string = textFallback ?? '';
   const textForSmtp: string = textFallback ?? '';
 
@@ -189,22 +216,33 @@ const sendEmail = async (options: EmailOptions | LegacyEmailOptions): Promise<Se
   try {
     sgInit();
 
-    await sgMail.send({
+    const sgAttachments = await mapSgAttachments('attachments' in options ? options.attachments : undefined);
+
+    const [resp] = await sgMail.send({
       to,
       from: { email: extractAddress(fromAddr), name: fromName },
       subject: (options as any).subject,
-      text: textForSg, // string garanti
+      text: textForSg,
       html: 'html' in options ? options.html : undefined,
-      attachments: mapSgAttachments('attachments' in options ? options.attachments : undefined) as any,
+      attachments: sgAttachments as any,
       headers: 'headers' in options ? options.headers : undefined,
       ...(replyToEmail
         ? { replyTo: { email: extractAddress(replyToEmail), name: replyToName || undefined } }
         : {}),
     });
 
+    // Essaye de récupérer un id de message SG si dispo
+    const sgMessageId =
+      // @sendgrid/mail (node-fetch Response) -> header name variant
+      (resp && (resp.headers as any)?.get?.('x-message-id')) ||
+      (resp && (resp.headers as any)?.get?.('x-msg-id')) ||
+      'sendgrid';
+
     console.log(`📧(SG) Email envoyé à ${maskEmailForLog(to)} ✅`);
-    // Objet minimal compatible
-    return { messageId: 'sendgrid', envelope: { from: extractAddress(fromAddr), to: [to] } } as unknown as SentMessageInfo;
+    return {
+      messageId: String(sgMessageId),
+      envelope: { from: extractAddress(fromAddr), to: [to] },
+    } as unknown as SentMessageInfo;
   } catch (sgErr: any) {
     console.error('⚠️ SendGrid a échoué, bascule SMTP…', sgErr?.response?.body || sgErr?.message || sgErr);
   }
@@ -227,9 +265,9 @@ const sendEmail = async (options: EmailOptions | LegacyEmailOptions): Promise<Se
     from: `"${fromName}" <${extractAddress(fromAddr)}>`,
     to,
     subject: (options as any).subject,
-    text: textForSmtp, // string garanti
+    text: textForSmtp,
     html: 'html' in options ? options.html : undefined,
-    attachments: 'attachments' in options ? options.attachments : undefined,
+    attachments: 'attachments' in options ? options.attachments : undefined, // Nodemailer gère path/Buffer/cid nativement
     headers: 'headers' in options ? options.headers : undefined,
     priority: 'priority' in options ? options.priority : undefined,
     ...(replyToEmail ? { replyTo: `"${replyToName || ''}" <${extractAddress(replyToEmail)}>` } : {}),
