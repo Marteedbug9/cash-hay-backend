@@ -303,122 +303,118 @@ export const deposit = async (req: Request, res: Response) => {
 
 export const withdraw = async (req: Request, res: Response) => {
   const userId = req.user?.id;
-  const { amount, bank } = req.body;
+  const rawAmount = (req.body?.amount ?? '').toString();
+  const bank = req.body?.bank;
 
-  if (!amount || isNaN(amount) || amount <= 0 || !bank) {
-    return res.status(400).json({ error: "Montant ou banque invalide." });
+  const amt = Number(rawAmount);
+
+  if (!userId) {
+    return res.status(401).json({ error: 'Authentification requise.' });
+  }
+  if (!rawAmount || isNaN(amt) || amt <= 0 || !bank) {
+    return res.status(400).json({ error: 'Montant ou banque invalide.' });
   }
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    // 1️⃣ Vérifie le solde du client (wallet interne)
+    // 1️⃣ Solde utilisateur (lock)
     const balanceRes = await client.query(
       'SELECT amount FROM balances WHERE user_id = $1 FOR UPDATE',
       [userId]
     );
-    const balance = parseFloat(balanceRes.rows[0]?.amount || '0');
-    if (balance < amount) {
+    const currentBalance = parseFloat(balanceRes.rows[0]?.amount || '0');
+
+    if (currentBalance < amt) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Solde insuffisant.' });
     }
 
-    // 2️⃣ Vérifie la carte Stripe liée à la banque choisie
-    let stripeCardId: string | null = null;
-    if (bank.type === 'card') {
-      stripeCardId = bank.stripe_card_id || null; // peut venir du front
+    // 2️⃣ Vérif carte Stripe si demandé
+    if (bank?.type === 'card') {
+      let stripeCardId: string | null = bank.stripe_card_id || null;
 
-      // Fallback DB si non fourni
       if (!stripeCardId) {
         const cardRes = await client.query(
-          'SELECT stripe_card_id FROM cards WHERE id = $1 AND user_id = $2 AND status = $3',
+          'SELECT stripe_card_id FROM cards WHERE id = $1 AND user_id = $2 AND status = $3 LIMIT 1',
           [bank.id, userId, 'active']
         );
         stripeCardId = cardRes.rows[0]?.stripe_card_id ?? null;
         if (!stripeCardId) {
           await client.query('ROLLBACK');
-          return res.status(404).json({ error: "Carte Stripe non trouvée." });
+          return res.status(404).json({ error: 'Carte Stripe non trouvée.' });
         }
       }
 
-      // 3️⃣ Vérifie la carte sur Stripe
       const card = await stripe.issuing.cards.retrieve(stripeCardId);
-
-      // Status
       if (card.status !== 'active') {
         await client.query('ROLLBACK');
-        return res.status(400).json({ error: "Carte Stripe non active." });
+        return res.status(400).json({ error: 'Carte Stripe non active.' });
       }
 
-      // Blocked categories (MCC)
       const blocked = card.spending_controls?.blocked_categories ?? [];
       if (blocked.some((mcc: string) => WITHDRAWAL_MCCS.includes(mcc))) {
         await client.query('ROLLBACK');
-        return res.status(400).json({ error: "Carte bloquée pour retrait ou transfert." });
+        return res.status(400).json({ error: 'Carte bloquée pour retrait ou transfert.' });
       }
 
-      // 4️⃣ (Optionnel) Vérifie le plafond restant (daily_spend_limit, etc.)
-      // ... si besoin
+      // (optionnel) Plafonds, etc.
     }
 
-    // 5️⃣ Déduit le solde interne
+    // 3️⃣ Débit du wallet interne
     await client.query(
       'UPDATE balances SET amount = amount - $1 WHERE user_id = $2',
-      [amount, userId]
+      [amt, userId]
     );
+    const balanceAfter = currentBalance - amt;
 
-    // 6️⃣ Transfert vers la banque business locale
-    const localBusinessAccount = { ...bank }; // À adapter à ta logique
-    const result = await sendToLocalBankBusiness(localBusinessAccount, amount);
-    if (!result.success) {
+    // 4️⃣ Virement vers la banque locale (adapter votre service)
+    const localBusinessAccount = { ...bank };
+    const result = await sendToLocalBankBusiness(localBusinessAccount, amt);
+    if (!result?.success) {
       await client.query('ROLLBACK');
-      return res.status(500).json({ error: "Transfert vers la banque locale échoué." });
+      return res.status(500).json({ error: 'Transfert vers la banque locale échoué.' });
     }
 
-    // 7️⃣ Log transaction côté back
+    // 5️⃣ Log transaction
     await client.query(
-      `INSERT INTO transactions 
-        (id, user_id, type, amount, currency, status, recipient_id, description, created_at)
-        VALUES (gen_random_uuid(), $1, 'withdraw', $2, 'HTG', 'pending', NULL, 'Retrait banque', NOW())`,
-      [userId, amount]
+      `INSERT INTO transactions
+         (id, user_id, type, amount, currency, status, recipient_id, description, created_at)
+       VALUES (gen_random_uuid(), $1, 'withdraw', $2, 'HTG', 'pending', NULL, 'Retrait banque', NOW())`,
+      [userId, amt]
     );
 
     await client.query('COMMIT');
 
-    // 8️⃣ Email de confirmation (asynchrone, après commit)
+    // 6️⃣ Email (asynchrone, après COMMIT) via deliverEmailWithLogo
     (async () => {
       try {
-        const uRes = await pool.query(
-          `SELECT first_name, first_name_enc, email_enc FROM users WHERE id = $1 LIMIT 1`,
-          [userId]
-        );
-        const row = uRes.rows[0] || {};
-        const email = decryptNullable(row.email_enc);
-        // Pas de mix '??' et '||'
-        const firstName =
-          ((row.first_name as string | null) ?? decryptNullable(row.first_name_enc)) ?? '';
+        const amountLabel = `${amt.toFixed(2)} HTG`;
+        const balanceAfterLabel = `${balanceAfter.toFixed(2)} HTG`;
 
-        if (email) {
-          const amountLabel = `${Number(amount)} HTG`;
-         const { subject, text, html } = buildWithdrawalEmail({
-  firstName,
-  amountLabel,
-  loginUrl: process.env.APP_LOGIN_URL || 'https://app.cash-hay.com/login',
-});
-          await sendEmail({ to: email, subject, text, html });
-        }
+        const built = buildWithdrawalEmail({
+          firstName: '', // si vous voulez afficher le prénom, récupérez-le si nécessaire
+          amountLabel,
+          balanceAfterLabel,
+          loginUrl: process.env.APP_LOGIN_URL || 'https://app.cash-hay.com/login',
+        });
+
+        await deliverEmailWithLogo(
+          { toUserId: userId }, // ✅ pas d’email en clair
+          built,
+          { priority: 'normal' }
+        );
       } catch (e) {
-        console.error('Erreur notification retrait:', e);
+        console.error('Erreur envoi email retrait:', e);
       }
     })();
 
     return res.json({ message: 'Retrait en cours de traitement. Vous serez notifié.' });
-
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('Erreur retrait:', err);
-    return res.status(500).json({ error: "Erreur lors du retrait." });
+    return res.status(500).json({ error: 'Erreur lors du retrait.' });
   } finally {
     client.release();
   }

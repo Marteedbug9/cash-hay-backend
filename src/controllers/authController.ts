@@ -14,7 +14,7 @@ import { encrypt, encryptNullable, decryptNullable, blindIndexEmail, blindIndexP
 import type { File as MulterFile } from 'multer';
 import { sha256Hex, timingSafeEqualHex, normalizeOtp} from '../utils/security';
 import { buildWelcomeEmail } from '../templates/emails/welcomeEmail';
-
+import { deliverEmailWithLogo } from '../templates/emails/_deliver';
 
 
 
@@ -114,7 +114,7 @@ export const register = async (req: Request, res: Response) => {
   if (!username || !usernameRegex.test(username)) {
     return res.status(400).json({ error: "Nom d’utilisateur invalide." });
   }
-  if (!email || !emailRegex.test(email)) {
+  if (!email || !emailRegex.test(String(email).trim().toLowerCase())) {
     return res.status(400).json({ error: 'Email invalide.' });
   }
   if (accept_terms !== true) {
@@ -238,19 +238,25 @@ export const register = async (req: Request, res: Response) => {
     await client.query('COMMIT');
 
     // ✅ notifications post-commit (best-effort, non bloquant)
-    const reward  = Number(process.env.WELCOME_REWARD_HTG ?? '25');
+    const reward   = Number(process.env.WELCOME_REWARD_HTG ?? '25');
     const loginUrl = process.env.APP_LOGIN_URL || 'https://app.cash-hay.com/login';
 
+    // Email HTML de bienvenue (avec logo inline via deliverEmailWithLogo)
     void (async () => {
-      // Email HTML de bienvenue
       try {
-        const { subject, text, html } = buildWelcomeEmail({
+        const built = buildWelcomeEmail({
           firstName: first_name ?? '',
           loginUrl,
           reward,
         });
-        await sendEmail({ to: emailNorm, subject, text, html });
-        console.log('📨 Email de bienvenue envoyé à', emailNorm);
+
+        await deliverEmailWithLogo(
+          { toUserId: userId }, // 👈 résolu en base (pas d’email en clair)
+          built,
+          { priority: 'normal' }
+        );
+
+        console.log('📨 Email de bienvenue envoyé à userId:', userId);
       } catch (e) {
         console.warn('⚠️ Email de bienvenue non envoyé :', (e as any)?.message || e);
       }
