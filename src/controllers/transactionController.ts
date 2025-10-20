@@ -13,6 +13,8 @@ import {
   blindIndexEmail,
   blindIndexPhone,
 } from '../utils/crypto';
+import crypto from 'crypto';
+
 import { deliverEmailWithLogo } from '../templates/emails/_deliver';
 import { buildMoneyReceivedEmail } from '../templates/emails/moneyReceivedEmail';
 import { buildMoneySentEmail } from '../templates/emails/moneySentEmail';
@@ -757,7 +759,7 @@ export const requestMoney = async (req: Request, res: Response) => {
   try {
     await client.query('BEGIN');
 
-    // 1) Trouver le membre destinataire via members.contact (email ou phone en clair)
+    // 1) Trouver le membre destinataire via members.contact (email/tel en clair)
     let memberRes;
     if (cleanedContact.includes('@')) {
       memberRes = await client.query(
@@ -801,7 +803,7 @@ export const requestMoney = async (req: Request, res: Response) => {
     };
     const recipientId = recipient.id;
 
-    // Empêcher auto-demande
+    // 2bis) Empêcher auto-demande
     if (recipientId === requesterId) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Impossible de vous faire une demande à vous-même.' });
@@ -868,15 +870,15 @@ export const requestMoney = async (req: Request, res: Response) => {
     );
     const sender = senderRes.rows[0] || {};
     const requesterFirst = (sender.first_name || '') as string;
-    const requesterLabel = ((sender.member_contact || '') as string).trim(); // members.contact (email/tel)
+    const requesterLabel = ((sender.member_contact || '') as string).trim(); // email/tel affichable
 
     // 7) Notif BDD
     await addNotification({
-      user_id: recipientId,                 // le destinataire reçoit la notif
+      user_id: recipientId, // le destinataire reçoit la notif
       type: 'request',
       from_first_name: sender.first_name || '',
       from_last_name:  sender.last_name  || '',
-      from_contact: requesterLabel,        // affichage (email/tel) de l’émetteur
+      from_contact: requesterLabel,
       from_profile_image: sender.photo_url || '',
       amount: amt,
       status: 'pending',
@@ -903,42 +905,52 @@ export const requestMoney = async (req: Request, res: Response) => {
       try {
         const amountLabel = `${amt.toFixed(2)} HTG`;
         const createdAtLabel = new Date().toLocaleString('fr-FR');
+        const recipientFirstName = (recipient.first_name || '') as string;
+
+        // 🔎 Emails chiffrés (filet de sécurité pour resolveEmail)
+        const [recRow, reqRow] = await Promise.all([
+          pool.query(`SELECT email_enc FROM users WHERE id = $1 LIMIT 1`, [recipientId]),
+          pool.query(`SELECT email_enc FROM users WHERE id = $1 LIMIT 1`, [requesterId]),
+        ]);
+        const recipientEmailEnc = recRow.rows[0]?.email_enc ?? null;
+        const requesterEmailEnc = reqRow.rows[0]?.email_enc ?? null;
 
         // a) Email DESTINATAIRE : variante "received"
-        const builtForRecipient = buildMoneyRequestEmail({
-          variant: 'received',
-          requesterFirstName: requesterFirst,
-          requesterLabel: requesterLabel, // email/tel ou alias de l’émetteur
-          amountLabel,
-          requestRef: txId,
-          createdAtLabel,
-        });
-        // ✅ pas d'email en clair : on résout via toUserId en base
-        await deliverEmailWithLogo(
-          { toUserId: recipientId },
-          builtForRecipient,
-          { priority: 'normal' }
-        );
+        if (recipientEmailEnc) {
+          const builtForRecipient = buildMoneyRequestEmail({
+            variant: 'received',
+            requesterFirstName: requesterFirst,
+            requesterLabel: requesterLabel,
+            amountLabel,
+            requestRef: txId,
+            createdAtLabel,
+          });
+          await deliverEmailWithLogo(
+            { toUserId: recipientId, toEmailEnc: recipientEmailEnc },
+            builtForRecipient,
+            { priority: 'normal' }
+          );
+        } else {
+          console.warn(`requestMoney: email destinataire introuvable (user_id=${recipientId}) -> skip email`);
+        }
 
         // b) Email ÉMETTEUR : variante "sent"
-        const rNameRes = await pool.query(
-          `SELECT first_name FROM users WHERE id = $1 LIMIT 1`,
-          [recipientId]
-        );
-        const recipientFirstName = (rNameRes.rows[0]?.first_name || '') as string;
-
-        const builtForRequester = buildMoneyRequestEmail({
-          variant: 'sent',
-          recipientFirstName,
-          amountLabel,
-          requestRef: txId,
-          createdAtLabel,
-        });
-        await deliverEmailWithLogo(
-          { toUserId: requesterId! },
-          builtForRequester,
-          { priority: 'normal' }
-        );
+        if (requesterEmailEnc) {
+          const builtForRequester = buildMoneyRequestEmail({
+            variant: 'sent',
+            recipientFirstName,
+            amountLabel,
+            requestRef: txId,
+            createdAtLabel,
+          });
+          await deliverEmailWithLogo(
+            { toUserId: requesterId!, toEmailEnc: requesterEmailEnc },
+            builtForRequester,
+            { priority: 'normal' }
+          );
+        } else {
+          console.warn(`requestMoney: email émetteur introuvable (user_id=${requesterId}) -> skip email`);
+        }
 
         // c) Push (si disponible)
         if (expoPushToken) {
