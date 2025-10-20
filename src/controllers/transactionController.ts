@@ -868,15 +868,15 @@ export const requestMoney = async (req: Request, res: Response) => {
     );
     const sender = senderRes.rows[0] || {};
     const requesterFirst = (sender.first_name || '') as string;
-    const requesterLabel = ((sender.member_contact || '') as string).trim(); // 👈 members.contact (email/tel affichable)
+    const requesterLabel = ((sender.member_contact || '') as string).trim(); // members.contact (email/tel)
 
-    // 7) Notif BDD (chiffrement géré côté helper)
+    // 7) Notif BDD
     await addNotification({
       user_id: recipientId,                 // le destinataire reçoit la notif
       type: 'request',
       from_first_name: sender.first_name || '',
       from_last_name:  sender.last_name  || '',
-      from_contact: requesterLabel,        // 👈 members.contact de l’émetteur
+      from_contact: requesterLabel,        // affichage (email/tel) de l’émetteur
       from_profile_image: sender.photo_url || '',
       amount: amt,
       status: 'pending',
@@ -908,14 +908,14 @@ export const requestMoney = async (req: Request, res: Response) => {
         const builtForRecipient = buildMoneyRequestEmail({
           variant: 'received',
           requesterFirstName: requesterFirst,
-          requesterLabel: requesterLabel,      // email/tel ou alias de l’émetteur
+          requesterLabel: requesterLabel, // email/tel ou alias de l’émetteur
           amountLabel,
           requestRef: txId,
           createdAtLabel,
-          // payUrl: vous pouvez ajouter un deep-link si vous en avez un
         });
+        // ✅ pas d'email en clair : on résout via toUserId en base
         await deliverEmailWithLogo(
-          { toUserId: recipientId },           // ✅ pas d'email en clair
+          { toUserId: recipientId },
           builtForRecipient,
           { priority: 'normal' }
         );
@@ -935,7 +935,7 @@ export const requestMoney = async (req: Request, res: Response) => {
           createdAtLabel,
         });
         await deliverEmailWithLogo(
-          { toUserId: requesterId },           // ✅ pas d'email en clair
+          { toUserId: requesterId! },
           builtForRequester,
           { priority: 'normal' }
         );
@@ -955,7 +955,7 @@ export const requestMoney = async (req: Request, res: Response) => {
 
     return res.status(200).json({ message: 'Demande d’argent enregistrée avec succès.', tx_id: txId });
   } catch (error) {
-    await client.query('ROLLBACK');
+    try { await client.query('ROLLBACK'); } catch {}
     console.error('❌ Erreur requestMoney :', error);
     return res.status(500).json({ error: 'Erreur serveur lors de la demande.' });
   } finally {
